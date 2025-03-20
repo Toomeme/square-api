@@ -1,34 +1,27 @@
-require('dotenv').config(); // Load environment variables
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
-const classRoutes = require('./routes/classes');
+const connectDB = require('./config/db');
 const bookingRoutes = require('./routes/bookings');
-const paymentRoutes = require('./routes/payments');
+const userRoutes = require('./routes/users'); // Import user routes
 
 const app = express();
-const port = process.env.PORT || 3001; // Use a different port than Squarespace
+const port = process.env.PORT || 3001;
+
+// Connect to Database
+connectDB();
 
 // Middleware
-app.use(cors()); // Enable CORS for all origins (configure for production!)
-app.use(bodyParser.json()); // Parse JSON request bodies
-app.use(bodyParser.urlencoded({ extended: true })); // Parse URL-encoded bodies
-
-// Database Connection (MongoDB example)
-mongoose.connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-})
-.then(() => console.log('Connected to MongoDB'))
-.catch(err => console.error('MongoDB connection error:', err));
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
 
 // Routes
-app.use('/api/classes', classRoutes);
 app.use('/api/bookings', bookingRoutes);
-app.use('/api/payments', paymentRoutes);
+app.use('/api/users', userRoutes); // Add user routes
 
-// Basic Error Handling (Improve this!)
+// Basic Error Handling
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).send('Something broke!');
