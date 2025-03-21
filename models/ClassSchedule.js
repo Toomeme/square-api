@@ -6,6 +6,7 @@ const classScheduleSchema = new mongoose.Schema({
     dayOfWeek: { type: Number, required: true }, // 0 = Sunday, 1 = Monday, ...
     startTime: { type: String, required: true }, // e.g., "09:00"
     endTime: { type: String, required: true },   // e.g., "10:00"
+    capacity: { type: Number, required: true },
 });
 
 module.exports = mongoose.model('ClassSchedule', classScheduleSchema);
