@@ -1,0 +1,453 @@
+<script src="https://js.stripe.com/v3/"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script> // If you are still using flatpickr
+
+<script>
+  // --- CONFIGURATION ---
+  const backendApiUrl = '...'; // Your backend URL
+  const stripePublishableKey = '...'; // Your Stripe Publishable Key
+  const semesters = [ /* ... */ ];
+  const SLOT_RANGE_DAYS = 7;
+
+  // --- STATE VARIABLES ---
+  let selectedService = null;
+  let selectedDate = null;
+  let selectedSlot = null;
+  let playgroupSelections = {
+      semester: null, daysBitmask: 0, paymentType: 'full',
+      calculatedCost: null, // Still useful for displaying cost for 'full' payment
+      scheduleIds: []
+  };
+  let stripe = null; // Keep the main Stripe object
+  // REMOVED: elements, cardElement, paymentIntentClientSecret
+  let authToken = localStorage.getItem('authToken');
+  let fetchedSlotsRange = {};
+  let isCheckoutInProgress = false; // Prevent double clicks
+
+  // --- DOM ELEMENTS (ALL TOGETHER) ---
+  // Booking Elements
+  const serviceButtons = document.querySelectorAll('.service-selector button');
+  const optionsContainer = document.getElementById('options-container');
+  // ... (Keep all other DOM element consts: playgroupOptions, otherOptions, selectors, inputs, containers etc.) ...
+  const calculateCostBtn = document.getElementById('calculate-cost-btn'); // Still used for playgroup 'full' cost display
+  const costSummaryDiv = document.getElementById('cost-summary');
+  const selectedCostSpan = document.getElementById('selected-cost');
+  const loginPromptDiv = document.getElementById('login-prompt');
+  const messagesDiv = document.getElementById('messages');
+
+  // Payment Section Elements (Simplified)
+  const paymentFormDiv = document.getElementById('payment-form'); // Keep the container to hide/show
+  // Repurpose the submit button for checkout
+  const checkoutButton = document.getElementById('submit-payment'); // Use the same ID or rename if preferred
+  // REMOVED: cardElementDiv
+
+  // Authentication UI Elements (If using embedded auth)
+  // ... (Keep loginSection, registerSection, userStatusDiv, etc. consts) ...
+
+
+  // --- FUNCTION DEFINITIONS ---
+
+  function initialize() {
+      // Initialize Stripe object
+      if (stripePublishableKey) {
+          try {
+              stripe = Stripe(stripePublishableKey);
+          } catch(e) { console.error("Failed to initialize Stripe:", e); }
+      } else {
+          console.error("Stripe Publishable Key is missing!");
+      }
+
+      if (playgroupSemesterSelect) populateSemesterDropdown();
+      setupEventListeners();
+      checkBookingLoginStatus(); // Check login status for booking section UI
+      if (bookingDateInput) { /* set default date */ }
+      checkAuthUILoginStatus(); // Check login status for auth UI section
+  }
+
+  // REMOVED: initializeStripe (Stripe Elements specific)
+
+  function checkBookingLoginStatus() {
+      authToken = localStorage.getItem('authToken');
+      const canProceed = isSelectionValidForCheckout(); // Check if a valid selection is made
+
+      if (loginPromptDiv && checkoutButton) {
+          if (!authToken) {
+              loginPromptDiv.classList.remove('hidden');
+              checkoutButton.classList.add('hidden'); // Hide checkout button if not logged in
+              checkoutButton.disabled = true;
+          } else {
+              loginPromptDiv.classList.add('hidden');
+              // Show checkout button ONLY if a valid selection is made
+              checkoutButton.classList.toggle('hidden', !canProceed);
+              checkoutButton.disabled = !canProceed || isCheckoutInProgress; // Disable if no selection or busy
+          }
+      }
+       // Hide the overall payment form container if user isn't logged in OR no valid selection
+       if (paymentFormDiv) {
+           paymentFormDiv.classList.toggle('hidden', !authToken || !canProceed);
+       }
+  }
+
+  // Helper to determine if the current state allows proceeding to checkout
+  function isSelectionValidForCheckout() {
+        if (!selectedService) return false;
+
+        if (selectedService === 'playgroup') {
+            return playgroupSelections.semester && playgroupSelections.daysBitmask > 0;
+        } else if (selectedService === 'openplay') {
+            const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+            if (!openPlayOption) return false; // Must select an option
+            return openPlayOption === 'dropin' ? !!selectedSlot : true; // Drop-in needs slot, others don't
+        } else if (selectedService === 'birthday') {
+             const birthdayOption = birthdayChoices?.querySelector('button.active')?.dataset.option;
+             return birthdayOption && !!selectedSlot; // Birthday needs option and slot
+        }
+        return false;
+    }
+
+
+  // ... (Keep populateSemesterDropdown, populatePlaygroupDaySelector, fetchAvailableSlotsRange, displaySlotsRange, highlightSlotsForDate) ...
+
+  function setupEventListeners() {
+      // ... (Keep listeners for serviceButtons, playgroupSemesterSelect, pgPaymentRadios, bookingDateInput, availableSlotsContainer, auth buttons) ...
+
+      // Playgroup Calculate/Proceed Button
+      if (calculateCostBtn) {
+          calculateCostBtn.addEventListener('click', handlePlaygroupAction); // Renamed handler
+      }
+
+      // Open Play Option Selection
+      if (openPlayChoices) {
+          openPlayChoices.addEventListener('click', (e) => {
+              handleOtherOptionSelection(e, 'openplay');
+              checkBookingLoginStatus(); // Update checkout button visibility
+          });
+      }
+      // Birthday Option Selection
+      if (birthdayChoices) {
+          birthdayChoices.addEventListener('click', (e) => {
+              handleOtherOptionSelection(e, 'birthday');
+              checkBookingLoginStatus(); // Update checkout button visibility
+          });
+      }
+      // Slot Selection
+       if (availableSlotsContainer) {
+         availableSlotsContainer.addEventListener('click', (e) => {
+            const slotDiv = e.target.closest('.slot');
+            if (slotDiv) {
+                handleSlotSelection(slotDiv.dataset.start, slotDiv.dataset.end);
+                checkBookingLoginStatus(); // Update checkout button visibility
+            }
+         });
+       }
+
+
+      // *** NEW: Main Checkout Button Listener ***
+      if (checkoutButton) {
+          checkoutButton.addEventListener('click', initiateCheckout);
+      }
+
+      // REMOVED: listener for payment form submission (handlePaymentSubmit)
+      // REMOVED: listener for card element changes
+  }
+
+  // Renamed handler for the playgroup button
+  function handlePlaygroupAction() {
+       if (!playgroupSelections.semester || playgroupSelections.daysBitmask === 0) {
+           if (messagesDiv) messagesDiv.textContent = 'Please select a semester and at least one day/time.';
+           return;
+       }
+
+       const selectedPaymentType = playgroupSelections.paymentType;
+
+       if (selectedPaymentType === 'full') {
+           // For 'full', we calculate cost just for display, then rely on the main checkout button
+           handleCalculatePlaygroupCostForDisplay(); // Calculate and display
+       } else {
+           // For 'installment', the button *itself* can trigger checkout immediately
+           initiateCheckout(); // Trigger checkout directly
+       }
+       checkBookingLoginStatus(); // Update checkout button visibility/state
+  }
+
+  // Calculates and displays cost for Playgroup 'Full', enables checkout button
+  async function handleCalculatePlaygroupCostForDisplay() {
+       if (calculateCostBtn) {
+           calculateCostBtn.disabled = true;
+           calculateCostBtn.textContent = 'Calculating Cost...';
+       }
+       if (messagesDiv) messagesDiv.textContent = '';
+       if (pgCostSummary) pgCostSummary.classList.add('hidden');
+       // Don't hide main payment form, just update cost summary
+       // if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+
+       try {
+            const response = await fetch(`${backendApiUrl}/api/pricing/calculate-playgroup`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                body: JSON.stringify({ /* semester details, bitmask, paymentType='full' */
+                    semesterStartDate: playgroupSelections.semester.start,
+                    semesterEndDate: playgroupSelections.semester.end,
+                    daysPerWeekBitmask: playgroupSelections.daysBitmask,
+                    paymentType: 'full' // Calculate as full payment
+                 })
+            });
+            if (!response.ok) { /* handle error */ throw new Error( (await response.json()).message || 'HTTP error'); }
+
+            const costDetails = await response.json();
+            playgroupSelections.calculatedCost = costDetails; // Store for reference/display
+
+            if (pgCostDetails) pgCostDetails.textContent = JSON.stringify(costDetails, null, 2);
+            if (pgCostSummary) pgCostSummary.classList.remove('hidden');
+            console.log("Full Playgroup Cost Calculated:", costDetails);
+
+            // Update UI based on login status (enables/shows checkout button)
+            checkBookingLoginStatus();
+
+       } catch (error) { /* handle error */ }
+       finally {
+            if (calculateCostBtn) {
+                 calculateCostBtn.disabled = false;
+                 calculateCostBtn.textContent = 'Recalculate Cost'; // Or similar
+            }
+       }
+   }
+
+
+  // --- Modified Handlers (removing payment intent logic) ---
+
+  function handleOtherOptionSelection(event, serviceType) {
+      if (!event.target.matches('button')) return;
+      const button = event.target;
+      const option = button.dataset.option;
+      // ... (style buttons) ...
+
+      resetOtherBooking(); // Reset slot/cost display
+
+      let showDate = false;
+      if (serviceType === 'openplay') {
+          if (option === 'dropin') { showDate = true; /* Slots already shown or loading */ }
+          else { // Punchcard or Membership - No specific slot/date needed
+              calculateOtherCost(option); // Calculate cost for display
+              // Checkout button enabled by checkBookingLoginStatus if logged in
+              if (availableSlotsContainer) availableSlotsContainer.innerHTML = '<i>Select membership/punchcard type. Proceed to checkout when ready.</i>';
+          }
+      } else if (serviceType === 'birthday') {
+          showDate = true; /* Slots already shown or loading */
+          // Cost calculated after slot selection
+      }
+
+      if (otherDateSelector) otherDateSelector.classList.toggle('hidden', !showDate && option !== 'dropin'); // Show date picker for dropin/birthday
+
+      // checkBookingLoginStatus(); // Called by setupEventListeners after this finishes
+  }
+
+  function handleSlotSelection(startISO, endISO) {
+      selectedSlot = { start: startISO, end: endISO };
+      // ... (highlight selected slot UI) ...
+
+      const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+      const birthdayOption = birthdayChoices?.querySelector('button.active')?.dataset.option;
+
+      // Calculate cost *after* slot is selected for relevant types
+      if (selectedService === 'openplay' && openPlayOption === 'dropin') {
+          calculateOtherCost('dropin');
+      } else if (selectedService === 'birthday' && birthdayOption === '2hour') {
+          calculateOtherCost('2hour');
+      }
+
+      // Update summary display
+      if (selectedSlotInfo) { /* ... update text ... */ }
+
+      // Update checkout button visibility/state
+      // checkBookingLoginStatus(); // Called by setupEventListeners after this finishes
+  }
+
+  // Simplified cost display update
+  function calculateOtherCost(option) {
+      let cost = 0;
+      // ... (calculate cost based on service/option) ...
+       if (selectedService === 'openplay') { /* ... */ }
+       else if (selectedService === 'birthday') { /* ... */ }
+
+      if (cost > 0) {
+          playgroupSelections.calculatedCost = { totalActualCost: cost }; // Use consistent structure
+          if (selectedCostSpan) selectedCostSpan.textContent = `$${cost.toFixed(2)}`;
+          if (costSummaryDiv) costSummaryDiv.classList.remove('hidden');
+      } else {
+          playgroupSelections.calculatedCost = null;
+          if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+      }
+      // Don't hide paymentFormDiv here, checkBookingLoginStatus handles visibility
+  }
+
+
+  // --- *** NEW: Unified Checkout Initiation *** ---
+  async function initiateCheckout() {
+      if (!stripe) { if (messagesDiv) messagesDiv.textContent = "Payment system not loaded."; return; }
+      if (!authToken) { if (messagesDiv) messagesDiv.textContent = "Please log in first."; return; }
+      if (isCheckoutInProgress) return; // Prevent double clicks
+
+      console.log("Initiating checkout...");
+      isCheckoutInProgress = true;
+      if (checkoutButton) {
+          checkoutButton.disabled = true;
+          checkoutButton.textContent = 'Processing...';
+      }
+      if (messagesDiv) messagesDiv.textContent = 'Preparing secure checkout...';
+
+      // --- Gather Data based on State ---
+      let checkoutData = { serviceType: selectedService };
+
+      if (selectedService === 'playgroup') {
+          checkoutData = {
+              ...checkoutData,
+              paymentType: playgroupSelections.paymentType, // 'full' or 'installment'
+              semesterDetails: playgroupSelections.semester,
+              daysPerWeekBitmask: playgroupSelections.daysBitmask,
+              scheduleIds: playgroupSelections.scheduleIds,
+          };
+      } else if (selectedService === 'openplay') {
+          const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+          checkoutData.openPlayOption = openPlayOption;
+          if (openPlayOption === 'dropin') {
+              if (!selectedSlot) { /* handle error - shouldn't happen if button logic is right */ }
+              checkoutData.selectedSlot = selectedSlot;
+          }
+      } else if (selectedService === 'birthday') {
+          const partyDuration = 2; // Assuming fixed duration for now
+           if (!selectedSlot) { /* handle error */ }
+          checkoutData.selectedSlot = selectedSlot;
+          checkoutData.partyDuration = partyDuration;
+      } else {
+          if (messagesDiv) messagesDiv.textContent = "Invalid service type selected.";
+          isCheckoutInProgress = false;
+          if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+          return;
+      }
+
+      console.log("Data for checkout:", checkoutData);
+
+      try {
+          // --- Call the unified backend endpoint ---
+          const response = await fetch(`${backendApiUrl}/api/payments/create-checkout-session`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${authToken}`,
+                  'ngrok-skip-browser-warning': 'true'
+              },
+              body: JSON.stringify(checkoutData)
+          });
+
+          if (!response.ok) {
+              const errorData = await response.json();
+              throw new Error(errorData.message || `Failed to initiate checkout (Status: ${response.status})`);
+          }
+
+          const { sessionId } = await response.json();
+
+          // --- Redirect to Stripe Checkout ---
+          if (sessionId) {
+              console.log("Redirecting to Stripe Checkout, Session:", sessionId);
+              const { error } = await stripe.redirectToCheckout({ sessionId: sessionId });
+              if (error) {
+                  // This error typically occurs client-side before the redirect happens
+                  throw new Error(`Checkout redirect failed: ${error.message}`);
+              }
+              // If redirect succeeds, browser navigates away. Code below here may not run reliably.
+              // Reset button state in case user navigates back without completing checkout
+              // isCheckoutInProgress = false;
+              // if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+          } else {
+               throw new Error("No session ID received from server.");
+          }
+
+      } catch (error) {
+          console.error('Error initiating checkout:', error);
+          if (messagesDiv) messagesDiv.textContent = `Error: ${error.message}`;
+          isCheckoutInProgress = false; // Re-enable button on error
+          if (checkoutButton) {
+              checkoutButton.disabled = false;
+              // Restore appropriate text based on context
+               checkoutButton.textContent = (selectedService === 'playgroup' && playgroupSelections.paymentType === 'installment')
+                  ? 'Retry Payment Setup' : 'Proceed to Checkout';
+          }
+      }
+  }
+
+
+  // --- REMOVED FUNCTIONS ---
+  // createPaymentIntent(...)
+  // handlePaymentSubmit(...)
+  // createBookingRecord(...)
+
+
+  // --- Utility Functions (Keep formatDateReadable, parseJwt) ---
+  function formatDateReadable(dateString) { /* ... */ }
+  function parseJwt (token) { /* ... */ }
+
+  // --- Reset Functions (Adjust as needed) ---
+   function resetForm() {
+       // ... Reset state variables ...
+       selectedService = null; selectedDate = bookingDateInput?.value; selectedSlot = null;
+       playgroupSelections = { /* reset */ };
+       isCheckoutInProgress = false;
+
+       // Reset UI elements
+       if (serviceButtons) serviceButtons.forEach(btn => btn.classList.remove('active'));
+       // ... Hide sections, clear inputs, clear slots, clear messages ...
+       if (availableSlotsContainer) availableSlotsContainer.innerHTML = '';
+       if (messagesDiv) messagesDiv.textContent = '';
+       if (checkoutButton) {
+            checkoutButton.textContent = 'Proceed to Checkout';
+            checkoutButton.classList.add('hidden'); // Hide until valid selection
+            checkoutButton.disabled = true;
+       }
+       if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+       if (pgCostSummary) pgCostSummary.classList.add('hidden');
+       if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+
+       checkBookingLoginStatus(); // Update prompts/buttons based on login
+       checkAuthUILoginStatus(); // Update auth UI if present
+   }
+   function resetPlaygroupCost() {
+       playgroupSelections.calculatedCost = null;
+       if (pgCostSummary) pgCostSummary.classList.add('hidden');
+       // Don't reset checkout button state here, depends on overall validity
+       // checkBookingLoginStatus(); // Check validity again
+   }
+   function resetOtherBooking() {
+       selectedSlot = null;
+       playgroupSelections.calculatedCost = null; // Use consistent cost object
+       if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+       if (availableSlotsContainer) {
+           availableSlotsContainer.querySelectorAll('.slot').forEach(el => {
+               el.classList.remove('selected');
+               // Reset highlight potentially added by date picker
+               el.style.backgroundColor = '';
+               el.style.border = '';
+           });
+       }
+       // Don't reset checkout button state here
+       // checkBookingLoginStatus(); // Check validity again
+   }
+
+
+  // --- Auth Functions (Keep handleAuthSuccess, handleLogout, checkAuthUILoginStatus, form submit handlers) ---
+  // Ensure handleAuthSuccess and handleLogout call checkBookingLoginStatus to update the checkout button state.
+  function handleAuthSuccess(token, user) {
+      // ... (store token, update auth UI) ...
+      authToken = token; // Update global variable
+      checkBookingLoginStatus(); // IMPORTANT: Update booking UI/checkout button state
+  }
+  function handleLogout() {
+      // ... (remove token, update auth UI) ...
+      authToken = null; // Update global variable
+      checkBookingLoginStatus(); // IMPORTANT: Update booking UI/checkout button state
+  }
+  // ... (Keep other auth functions: handleLoginFormSubmit, handleRegisterFormSubmit, checkAuthUILoginStatus) ...
+
+
+  // --- INITIAL EXECUTION ---
+  initialize();
+
+</script>

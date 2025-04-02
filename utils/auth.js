@@ -1,7 +1,7 @@
 // utils/auth.js
 const jwt = require('jsonwebtoken');
 
-const secret = 'mysecretsshhhhh'; //  BEST PRACTICE: Store this in an environment variable!
+const secret = process.env.JWT_SECRET; //  BEST PRACTICE: Store this in an environment variable!
 const expiration = '2h';
 
 module.exports = {

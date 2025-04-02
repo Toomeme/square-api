@@ -26,6 +26,42 @@ const userSchema = new Schema(
         ref: 'Booking'
       }
     ],
+    openPlayPunches: { type: Number, default: 0 },
+    membershipExpiry: { type: Date },
+
+    // --- New Stripe Fields ---
+    stripeCustomerId: {
+      type: String,
+      // unique: true, // Might cause issues if creation fails partway, index is better
+      index: true,
+      sparse: true // Index only if the field exists
+    },
+    // Store active subscription IDs - could be an array if multiple subs are possible
+    stripeSubscriptionId: {
+        type: String,
+        index: true,
+        sparse: true
+    },
+    // --- Modified/New Installment Tracking Fields ---
+    playgroupInstallmentAmount: { // Base amount per installment (cents)
+      type: Number
+  },
+  playgroupInstallmentsRemaining: { // Counter for pending installments
+      type: Number
+  },
+    playgroupEnrollmentSemester: { // Optional: Store which semester this applies to
+        type: String // e.g., "fall_2024"
+    },
+    // Flag to prevent creating bookings multiple times
+    playgroupBookingsCreatedForSub: {
+        type: String // Store the subscription ID for which bookings were made
+    },
+    playgroupTotalSemesterCost: { // Total cost calculated at checkout (cents)
+      type: Number
+  },
+  playgroupTotalInstallments: { // Original number of installments calculated
+      type: Number
+  }
   },
   {
     toJSON: {

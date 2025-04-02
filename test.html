@@ -1,0 +1,1370 @@
+<script src="https://js.stripe.com/v3/"></script>
+<script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+
+<script>
+  // --- CONFIGURATION ---
+  // !!! IMPORTANT: Replace with your actual URLs and Keys !!!
+  const backendApiUrl = 'https://979f-2601-182-780-1120-f4a2-d2b-ed1c-fb80.ngrok-free.app'; // <-- Replace
+  const stripePublishableKey = 'pk_test_51R7L7ZH6Oy3P9Y0FQyNIzIU6wO3zFV1RlVetotlOtVP03AY9zX8OiEKkBTIOHC1GC8aEScZAAW1JZ1zAKenzHtDJ00BgwiIp0T'; // <-- Replace
+
+  const semesters = [
+      { name: "Spring 2025", start: "2025-03-02", end: "2025-06-20" },
+      { name: "Summer 2025", start: "2025-06-21", end: "2025-12-23" },
+      // Add more semesters as needed
+  ];
+
+  const SLOT_RANGE_DAYS = 7;
+
+  let fetchedSlotsRange = {};
+
+  // --- STATE VARIABLES ---
+  let selectedService = null;
+  let selectedDate = null;
+  let selectedSlot = null; // For Open Play / Birthday
+  let playgroupSelections = { // For Playgroup
+      semester: null,
+      daysBitmask: 0, // Bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
+      paymentType: 'full',
+      calculatedCost: null,
+      scheduleIds: [] // Store ClassSchedule IDs for selected day/times
+  };
+  let stripe = null;
+  // Use consistent key 'authToken'
+  let authToken = localStorage.getItem('authToken');
+  let isCheckoutInProgress = false; // Prevent double clicks
+
+  // --- DOM ELEMENTS (ALL TOGETHER) ---
+  // Booking Elements
+  const serviceButtons = document.querySelectorAll('.service-selector button');
+  const optionsContainer = document.getElementById('options-container');
+  const playgroupOptions = document.getElementById('playgroup-options');
+  const otherOptions = document.getElementById('other-options');
+  const playgroupSemesterSelect = document.getElementById('playgroup-semester');
+  const playgroupDaySelector = document.getElementById('playgroup-day-selector');
+  const pgPaymentRadios = document.querySelectorAll('input[name="playgroup-payment"]');
+  const pgCostSummary = document.getElementById('playgroup-cost-summary');
+  const pgCostDetails = document.getElementById('pg-cost-details');
+  const otherServiceTitle = document.getElementById('other-service-title');
+  const openPlayChoices = document.getElementById('openplay-choices');
+  const birthdayChoices = document.getElementById('birthday-choices');
+  const otherDateSelector = document.getElementById('date-selector-other');
+  const bookingDateInput = document.getElementById('booking-date');
+  const availableSlotsContainer = document.getElementById('available-slots');
+  // Give your loading P tag an ID like: <p class="loading hidden" id="loading-indicator">Loading...</p>
+  const loadingSlotsIndicator = document.getElementById('loading-indicator');
+  const selectedSlotInfo = document.getElementById('selected-slot-info');
+  const calculateCostBtn = document.getElementById('calculate-cost-btn'); // Still used for playgroup 'full' cost display
+  const costSummaryDiv = document.getElementById('cost-summary');
+  const selectedCostSpan = document.getElementById('selected-cost');
+  const loginPromptDiv = document.getElementById('login-prompt');
+  const messagesDiv = document.getElementById('messages');
+
+  // Payment Section Elements (Simplified)
+  const paymentFormDiv = document.getElementById('payment-form'); // Keep the container to hide/show
+  // Repurpose the submit button for checkout
+  const checkoutButton = document.getElementById('submit-payment');
+
+  // Authentication UI Elements (ensure these IDs exist in your HTML)
+  const loginSection = document.getElementById('login-section');
+  const registerSection = document.getElementById('register-section');
+  const loginForm = document.getElementById('login-form');
+  const registerForm = document.getElementById('register-form');
+  const loginEmailInput = document.getElementById('login-email');
+  const loginPasswordInput = document.getElementById('login-password');
+  const registerUsernameInput = document.getElementById('register-username');
+  const registerEmailInput = document.getElementById('register-email');
+  const registerPasswordInput = document.getElementById('register-password');
+  const loginErrorDiv = document.getElementById('login-error');
+  const registerErrorDiv = document.getElementById('register-error');
+  const showRegisterButton = document.getElementById('show-register-button');
+  const showLoginButton = document.getElementById('show-login-button');
+  const loginButton = document.getElementById('login-button');
+  const registerButton = document.getElementById('register-button');
+  const userStatusDiv = document.getElementById('user-status'); // Auth section's status display
+  const loggedInUsernameSpan = document.getElementById('logged-in-username');
+  const logoutButton = document.getElementById('logout-button');
+
+
+  // --- FUNCTION DEFINITIONS (ALL FUNCTIONS HERE) ---
+
+  async function fetchAvailableSlotsRange(serviceType) {
+      if (!availableSlotsContainer || !loadingSlotsIndicator) {
+          console.error("Missing elements for displaying slots range.");
+          return;
+      }
+
+      loadingSlotsIndicator.classList.remove('hidden');
+      availableSlotsContainer.innerHTML = ''; // Clear previous slots
+      availableSlotsContainer.appendChild(loadingSlotsIndicator); // Show loading
+      if (messagesDiv) messagesDiv.textContent = '';
+      fetchedSlotsRange = {}; // Clear previous results
+      resetOtherBooking(); // Reset any previously selected slot/cost
+
+      try {
+          const response = await fetch(`${backendApiUrl}/api/bookings/available-slots-range?serviceType=${serviceType}&days=${SLOT_RANGE_DAYS}`, {
+              headers: { 'ngrok-skip-browser-warning': 'true' } // Header for ngrok
+          });
+          if (!response.ok) {
+              const errorData = await response.json();
+              throw new Error(errorData.message || `HTTP error! status: ${response.status}`);
+          }
+          fetchedSlotsRange = await response.json();
+
+          displaySlotsRange();
+
+      } catch (error) {
+          console.error('Error fetching slots range:', error);
+          loadingSlotsIndicator.classList.add('hidden');
+          if (availableSlotsContainer) {
+              availableSlotsContainer.innerHTML = `<p class="error">Could not load availability: ${error.message}. Please try again later.</p>`;
+          }
+      }
+  }
+
+  // *** NEW: Function to display the fetched slots range ***
+  function displaySlotsRange() {
+      if (!availableSlotsContainer || !loadingSlotsIndicator) return;
+
+      loadingSlotsIndicator.classList.add('hidden'); // Hide loading
+      availableSlotsContainer.innerHTML = ''; // Clear placeholder/loading
+
+      const sortedDates = Object.keys(fetchedSlotsRange).sort(); // Sort dates chronologically
+
+      if (sortedDates.length === 0 || sortedDates.every(date => fetchedSlotsRange[date].length === 0)) {
+          availableSlotsContainer.innerHTML = '<p>No available slots found in the upcoming days.</p>';
+          return;
+      }
+
+      sortedDates.forEach(dateStr => {
+          const slots = fetchedSlotsRange[dateStr];
+          if (slots.length > 0) {
+              const dateHeader = document.createElement('h4');
+              // Format date for display (e.g., "Mon, Sep 16")
+              const dateObj = new Date(dateStr + 'T00:00:00'); // Parse as local date
+              dateHeader.textContent = dateObj.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+              dateHeader.style.marginTop = '15px'; // Add some spacing
+              availableSlotsContainer.appendChild(dateHeader);
+
+              slots.forEach(slot => {
+                  const start = new Date(slot.start);
+                  const end = new Date(slot.end);
+                  const div = document.createElement('div');
+                  div.classList.add('slot');
+                  div.dataset.start = slot.start;
+                  div.dataset.end = slot.end;
+                  div.innerHTML = `
+                      <span>${start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - ${end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+                      `;
+                      // <span>${start.toLocaleDateString()}</span> // Date is now in the header
+                  availableSlotsContainer.appendChild(div);
+              });
+          }
+          // Optional: Could add a message like "No slots available for [Date]" if slots array is empty for a date within the range
+          else {
+                const noSlotsMsg = document.createElement('p');
+                noSlotsMsg.textContent = `No slots available for ${new Date(dateStr + 'T00:00:00').toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}`;
+              noSlotsMsg.style.fontStyle = 'italic';
+                noSlotsMsg.style.color = '#888';
+                availableSlotsContainer.appendChild(noSlotsMsg);
+           }
+      });
+  }
+
+  function initialize() {
+    if (stripePublishableKey) {
+          try {
+              stripe = Stripe(stripePublishableKey);
+          } catch(e) { console.error("Failed to initialize Stripe:", e); }
+      } else {
+          console.error("Stripe Publishable Key is missing!");
+      }
+      // Check if elements exist before trying to use them, especially if auth/booking are on separate pages/code blocks
+      if (playgroupSemesterSelect) populateSemesterDropdown();
+      setupEventListeners(); // This function now needs checks inside
+      checkBookingLoginStatus(); // Check login status for booking section
+
+      // Set default date if input exists
+      if (bookingDateInput) {
+          const today = new Date().toISOString().split('T')[0];
+          bookingDateInput.value = today;
+          bookingDateInput.min = today;
+      }
+
+      // Check auth UI login status if auth elements are on the page
+      checkAuthUILoginStatus();
+  }
+
+  // Renamed: Checks login status specifically for the BOOKING UI elements
+  function checkBookingLoginStatus() {
+    authToken = localStorage.getItem('authToken');
+      const canProceed = isSelectionValidForCheckout();
+
+      // Handle Login Prompt
+      if (loginPromptDiv) {
+          loginPromptDiv.classList.toggle('hidden', !!authToken);
+      }
+
+      // Handle Main Checkout Button Visibility/State
+      if (checkoutButton) {
+          // Show button only if logged in AND a valid selection is made
+          const showButton = !!authToken && canProceed;
+          checkoutButton.classList.toggle('hidden', !showButton);
+          checkoutButton.disabled = !showButton || isCheckoutInProgress;
+      }
+
+       // Show/Hide the overall payment form container based ONLY on login status
+       // The button inside handles the 'valid selection' part
+       if (paymentFormDiv) {
+           paymentFormDiv.classList.toggle('hidden', !authToken);
+       }
+  }
+
+  function isSelectionValidForCheckout() {
+      if (!selectedService) return false;
+      if (!authToken) return false; // Cannot proceed if not logged in
+
+      if (selectedService === 'playgroup') {
+          // Only requires semester and days now, payment type is selected later
+          return playgroupSelections.semester && playgroupSelections.daysBitmask > 0;
+      } else if (selectedService === 'openplay') {
+          const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+          if (!openPlayOption) return false;
+          return openPlayOption === 'dropin' ? !!selectedSlot : true; // Drop-in needs slot
+      } else if (selectedService === 'birthday') {
+           const birthdayOption = birthdayChoices?.querySelector('button.active')?.dataset.option;
+           return birthdayOption && !!selectedSlot; // Birthday needs option and slot
+      }
+      return false;
+  }
+
+
+  function populateSemesterDropdown() {
+      // Ensure element exists
+      if (!playgroupSemesterSelect) return;
+      playgroupSemesterSelect.innerHTML = ''; // Clear existing
+      semesters.forEach((sem, index) => {
+          const option = document.createElement('option');
+          option.value = JSON.stringify({ start: sem.start, end: sem.end });
+          option.textContent = `${sem.name} (${formatDateReadable(sem.start)} - ${formatDateReadable(sem.end)})`;
+          if (index === 0) { // Select the first one by default
+              option.selected = true;
+              playgroupSelections.semester = { start: sem.start, end: sem.end };
+          }
+          playgroupSemesterSelect.appendChild(option);
+      });
+  }
+
+  async function populatePlaygroupDaySelector() {
+       // Ensure element exists
+       if (!playgroupDaySelector) return;
+       playgroupDaySelector.innerHTML = '<p class="loading">Loading schedule...</p>';
+       playgroupSelections.daysBitmask = 0; // Reset selection
+       playgroupSelections.scheduleIds = []; // Reset schedule IDs
+
+      try {
+           const response = await fetch(`${backendApiUrl}/api/class-schedules?serviceType=playgroup`,{
+             headers: { 'ngrok-skip-browser-warning': 'true' } // Header for ngrok
+           });
+           if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+           const schedules = await response.json();
+           const paymentOptionsDiv = document.getElementById('playgroup-payment-options-display');
+           if (paymentOptionsDiv) paymentOptionsDiv.classList.add('hidden');
+           if (!schedules || schedules.length === 0) {
+               playgroupDaySelector.innerHTML = '<p>No playgroup schedules found.</p>';
+               return;
+           }
+
+           playgroupDaySelector.innerHTML = '<p>Select Desired Day(s)/Time(s) for the Semester:</p>';
+           const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+           schedules.sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.startTime.localeCompare(b.startTime));
+
+           schedules.forEach(schedule => {
+               const dayName = daysOfWeek[schedule.dayOfWeek];
+               const time = `${schedule.startTime} - ${schedule.endTime}`;
+               const bitValue = 1 << schedule.dayOfWeek;
+
+               const div = document.createElement('div');
+               div.classList.add('day-option');
+               div.dataset.scheduleId = schedule._id;
+               div.dataset.dayBit = bitValue;
+               div.innerHTML = `
+                   <input type="checkbox" id="schedule-${schedule._id}" data-schedule-id="${schedule._id}" data-day-bit="${bitValue}">
+                   <label for="schedule-${schedule._id}">${dayName} ${time} (Capacity: ${schedule.capacity})</label>
+               `;
+               playgroupDaySelector.appendChild(div);
+
+               const checkbox = div.querySelector('input[type="checkbox"]');
+               checkbox.addEventListener('change', handlePlaygroupDaySelection);
+           });
+
+       } catch (error) {
+           console.error("Error fetching playgroup schedule:", error);
+           playgroupDaySelector.innerHTML = '<p class="error">Could not load playgroup schedule. Please try again later.</p>';
+       }
+   }
+
+
+  // Add checks inside event listeners setup
+  function setupEventListeners() {
+      // Service Type Selection
+      if (serviceButtons) {
+        serviceButtons.forEach(button => {
+            button.addEventListener('click', () => handleServiceSelection(button.dataset.service));
+        });
+      }
+
+      // Playgroup Semester Change
+      if (playgroupSemesterSelect) {
+        playgroupSemesterSelect.addEventListener('change', (e) => {
+            playgroupSelections.semester = JSON.parse(e.target.value);
+            resetPlaygroupCost();
+        });
+      }
+
+       // Playgroup Day Selection (Checkbox changes)
+       if (playgroupDaySelector) {
+           playgroupDaySelector.addEventListener('change', (e) => {
+               if (e.target.matches('input[type="checkbox"]')) {
+                   handlePlaygroupDaySelection(e); // Existing logic to update bitmask/ids
+                   // *** NEW: Trigger cost update whenever days change ***
+                   updatePlaygroupPaymentDisplays();
+                   checkBookingLoginStatus(); // Update checkout button state
+               }
+           });
+       }
+
+       if (pgPaymentRadios) {
+          pgPaymentRadios.forEach(radio => {
+              radio.addEventListener('change', (e) => {
+                  playgroupSelections.paymentType = e.target.value;
+                  console.log("Selected Payment Type:", playgroupSelections.paymentType);
+                  // No recalculation needed here, just update state
+                  checkBookingLoginStatus(); // Re-evaluate checkout button state if needed
+              });
+          });
+      }
+
+      if (bookingDateInput) {
+        bookingDateInput.addEventListener('change', (e) => {
+            selectedDate = e.target.value;
+            if (selectedService && selectedService !== 'playgroup' && selectedDate) {
+                highlightSlotsForDate(selectedDate);
+
+            }
+            resetOtherBooking();
+        });
+      }
+
+      if (openPlayChoices) {
+          openPlayChoices.addEventListener('click', (e) => {
+              handleOtherOptionSelection(e, 'openplay');
+              checkBookingLoginStatus(); // Update checkout button visibility
+          });
+      }
+      // Birthday Option Selection
+      if (birthdayChoices) {
+          birthdayChoices.addEventListener('click', (e) => {
+              handleOtherOptionSelection(e, 'birthday');
+              checkBookingLoginStatus(); // Update checkout button visibility
+          });
+      }
+
+      // Slot Selection
+      if (availableSlotsContainer) {
+         availableSlotsContainer.addEventListener('click', (e) => {
+            const slotDiv = e.target.closest('.slot');
+            if (slotDiv) {
+                handleSlotSelection(slotDiv.dataset.start, slotDiv.dataset.end);
+                checkBookingLoginStatus(); // Update checkout button visibility
+            }
+         });
+       }
+
+       if (checkoutButton) {
+          checkoutButton.addEventListener('click', initiateCheckout);
+      }
+
+      // Auth Event Listeners (also check if elements exist)
+      if (showRegisterButton) {
+           showRegisterButton.addEventListener('click', () => {
+               if (loginSection) loginSection.style.display = 'none';
+               if (registerSection) registerSection.style.display = 'block';
+               if (loginErrorDiv) loginErrorDiv.textContent = '';
+           });
+       }
+       if (showLoginButton) {
+           showLoginButton.addEventListener('click', () => {
+               if (registerSection) registerSection.style.display = 'none';
+               if (loginSection) loginSection.style.display = 'block';
+               if (registerErrorDiv) registerErrorDiv.textContent = '';
+           });
+       }
+       if (loginForm) {
+           loginForm.addEventListener('submit', handleLoginFormSubmit); // Use named function
+       }
+       if (registerForm) {
+           registerForm.addEventListener('submit', handleRegisterFormSubmit); // Use named function
+       }
+       if (logoutButton) {
+           logoutButton.addEventListener('click', handleLogout);
+       }
+  }
+
+   // --- *** NEW/REVISED: Updates both payment display areas for Playgroup *** ---
+   async function updatePlaygroupPaymentDisplays() {
+      const paymentOptionsDiv = document.getElementById('playgroup-payment-options-display');
+      const fullPaymentSummaryBox = document.getElementById('playgroup-cost-summary');
+      const installmentDetailsBox = document.getElementById('installment-details');
+
+      if (!paymentOptionsDiv || !fullPaymentSummaryBox || !installmentDetailsBox) return; // Ensure elements exist
+
+      // Hide both initially if no days selected
+      if (playgroupSelections.daysBitmask === 0) {
+          paymentOptionsDiv.classList.add('hidden');
+          return;
+      }
+
+      // Show the container
+      paymentOptionsDiv.classList.remove('hidden');
+      fullPaymentSummaryBox.classList.add('hidden'); // Hide specific boxes until calculated
+      installmentDetailsBox.classList.add('hidden');
+
+      // --- Calculate Full Payment Cost (for display) ---
+      let calculatedFullCost = null;
+      try {
+          const response = await fetch(`${backendApiUrl}/api/pricing/calculate-playgroup`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+              body: JSON.stringify({
+                  semesterStartDate: playgroupSelections.semester.start,
+                  semesterEndDate: playgroupSelections.semester.end,
+                  daysPerWeekBitmask: playgroupSelections.daysBitmask,
+                  paymentType: 'full' // Always calculate 'full' for display here
+               })
+          });
+          if (!response.ok) throw new Error('Failed to calculate cost');
+          calculatedFullCost = await response.json();
+
+          // Display Full Payment Details
+          populatePlaygroupFullCostUI(calculatedFullCost); // Use helper
+          fullPaymentSummaryBox.classList.remove('hidden');
+
+      } catch (error) {
+          console.error('Error calculating playgroup cost for display:', error);
+          if (messagesDiv) messagesDiv.textContent = `Error calculating cost: ${error.message}`;
+          // Hide the full payment box on error
+          fullPaymentSummaryBox.classList.add('hidden');
+      }
+
+      // --- Display Installment Info ---
+      populatePlaygroupInstallmentUI(); // Use helper
+      installmentDetailsBox.classList.remove('hidden');
+
+      // Update overall checkout button state
+      checkBookingLoginStatus();
+  }
+
+  function highlightSlotsForDate(dateStrToHighlight) { // dateStr is "YYYY-MM-DD"
+       if (!availableSlotsContainer) return;
+       availableSlotsContainer.querySelectorAll('.slot').forEach(slotDiv => {
+           const slotStartDate = new Date(slotDiv.dataset.start).toISOString().split('T')[0];
+           if (slotStartDate === dateStrToHighlight) {
+               slotDiv.style.backgroundColor = '#e0f7ff'; // Example highlight
+               slotDiv.style.border = '1px solid #007bff';
+           } else {
+               slotDiv.style.backgroundColor = ''; // Remove highlight
+               slotDiv.style.border = '';
+           }
+       });
+        // Optional: Scroll to the first highlighted slot or the date header
+        const firstMatch = availableSlotsContainer.querySelector(`.slot[data-start^="${dateStrToHighlight}"]`);
+        if(firstMatch) {
+            firstMatch.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+   }
+
+
+  // --- HANDLER FUNCTIONS ---
+
+  function handleServiceSelection(service) {
+      selectedService = service;
+      selectedSlot = null;
+      // Ensure input exists before accessing value
+      selectedDate = bookingDateInput ? bookingDateInput.value : null;
+      playgroupSelections.calculatedCost = null;
+
+      if(serviceButtons){
+        serviceButtons.forEach(btn => btn.classList.remove('active'));
+        const currentBtn = document.querySelector(`.service-selector button[data-service="${service}"]`);
+        if(currentBtn) currentBtn.classList.add('active');
+      }
+
+      if (optionsContainer) optionsContainer.classList.remove('hidden');
+      if (playgroupOptions) playgroupOptions.classList.add('hidden');
+      if (otherOptions) otherOptions.classList.add('hidden');
+      if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+      if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+      if (pgCostSummary) pgCostSummary.classList.add('hidden');
+      if (availableSlotsContainer) availableSlotsContainer.innerHTML = '';
+      if (messagesDiv) messagesDiv.textContent = '';
+
+      fetchedSlotsRange = {};
+      if (availableSlotsContainer) availableSlotsContainer.innerHTML = ''; // Clear slots display
+
+      if (service === 'playgroup') {
+          if (playgroupOptions) playgroupOptions.classList.remove('hidden');
+          if (otherDateSelector) otherDateSelector.classList.add('hidden'); // Hide date picker for playgroup
+          populatePlaygroupDaySelector();
+      } else { // Open Play or Birthday
+          if (otherOptions) otherOptions.classList.remove('hidden');
+          if (otherServiceTitle) otherServiceTitle.textContent = service === 'openplay' ? 'Open Play Options' : 'Birthday Party Options';
+          if (openPlayChoices) openPlayChoices.classList.toggle('hidden', service !== 'openplay');
+          if (birthdayChoices) birthdayChoices.classList.toggle('hidden', service !== 'birthday');
+
+          // Show date picker for filtering, but don't hide slots container yet
+          if (otherDateSelector) otherDateSelector.classList.remove('hidden');
+
+          // Reset option buttons
+          if (openPlayChoices) openPlayChoices.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+          if (birthdayChoices) birthdayChoices.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+
+          // *** Immediately fetch and display slots for the range ***
+          fetchAvailableSlotsRange(service);
+      }
+      checkBookingLoginStatus();
+  }
+
+    function handleOtherOptionSelection(event, serviceType) {
+        if (!event.target.matches('button')) return;
+
+        const button = event.target;
+        const option = button.dataset.option;
+
+        const buttonGroup = serviceType === 'openplay' ? openPlayChoices : birthdayChoices;
+        if (buttonGroup) {
+            buttonGroup.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        }
+        button.classList.add('active');
+
+
+      resetOtherBooking(); // Reset slot/cost when option changes
+
+      // Cost calculation and PaymentIntent creation for non-slot options (Punchcard/Membership)
+      if (serviceType === 'openplay' && (option === 'punchcard' || option === 'membership')) {
+          calculateOtherCost(option);
+          if (availableSlotsContainer) availableSlotsContainer.innerHTML = '<i>Select membership/punchcard type. Proceed to checkout when ready.</i>';
+          // Hide date selector and clear slots if they were for drop-in
+          if (otherDateSelector) otherDateSelector.classList.add('hidden');
+          if (availableSlotsContainer) availableSlotsContainer.innerHTML = '<p><i>Select membership/punchcard type above. Booking specific time slots is not required.</i></p>';
+
+      } else {
+          // For Drop-in or Birthday, slots are already displayed (or loading) by handleServiceSelection/fetchAvailableSlotsRange
+          // Ensure date picker is visible
+          if (otherDateSelector) otherDateSelector.classList.remove('hidden');
+          // If slots were previously cleared by membership/punchcard, re-fetch/display them
+           if (availableSlotsContainer && availableSlotsContainer.innerHTML.includes('not required')) {
+               fetchAvailableSlotsRange(serviceType); // Re-fetch if needed
+           }
+      }
+      checkBookingLoginStatus();
+    }
+
+
+    function handlePlaygroupDaySelection(event) {
+        const checkbox = event.target;
+        const scheduleId = checkbox.dataset.scheduleId;
+        const dayBit = parseInt(checkbox.dataset.dayBit, 10);
+        const dayOptionDiv = checkbox.closest('.day-option');
+
+        if (checkbox.checked) {
+            playgroupSelections.daysBitmask |= dayBit;
+            if (!playgroupSelections.scheduleIds.includes(scheduleId)) {
+                 playgroupSelections.scheduleIds.push(scheduleId);
+            }
+            if (dayOptionDiv) dayOptionDiv.classList.add('selected');
+        } else {
+            let dayStillSelected = false;
+            if (playgroupDaySelector) {
+                playgroupDaySelector.querySelectorAll(`input[data-day-bit="${dayBit}"]`).forEach(cb => {
+                    if (cb.checked) dayStillSelected = true;
+                });
+            }
+             if (!dayStillSelected) {
+                 playgroupSelections.daysBitmask &= ~dayBit;
+             }
+
+            playgroupSelections.scheduleIds = playgroupSelections.scheduleIds.filter(id => id !== scheduleId);
+             if (dayOptionDiv) dayOptionDiv.classList.remove('selected');
+        }
+        resetPlaygroupCost();
+    }
+
+
+    function handlePlaygroupAction() {
+       if (!playgroupSelections.semester || playgroupSelections.daysBitmask === 0) {
+           if (messagesDiv) messagesDiv.textContent = 'Please select a semester and at least one day/time.';
+           return;
+       }
+
+       const selectedPaymentType = playgroupSelections.paymentType;
+
+       if (selectedPaymentType === 'full') {
+           // For 'full', we calculate cost just for display, then rely on the main checkout button
+           handleCalculatePlaygroupCostForDisplay(); // Calculate and display
+       } else {
+           // For 'installment', the button *itself* can trigger checkout immediately
+           initiateCheckout(); // Trigger checkout directly
+       }
+
+  }
+  pgPaymentRadios.forEach(radio => {
+    radio.addEventListener('change', (e) => {
+        playgroupSelections.paymentType = e.target.value;
+        //resetPlaygroupCost(); // Resets cost display
+        // Update the calculate button text based on selection
+        if (calculateCostBtn) {
+            if (playgroupSelections.paymentType === 'installment') {
+                calculateCostBtn.textContent = 'Proceed to Payment Setup'; // This button now triggers checkout
+            } else {
+                calculateCostBtn.textContent = 'Calculate Cost (Full Payment)'; // This button just calculates
+            }
+        }
+        // Reset main checkout button state
+        checkBookingLoginStatus();
+    });
+});
+
+    // Calculates and displays cost for Playgroup 'Full', enables checkout button
+    async function handleCalculatePlaygroupCostForDisplay() {
+       if (calculateCostBtn) {
+           calculateCostBtn.disabled = true;
+           calculateCostBtn.textContent = 'Calculating Cost...';
+       }
+       if (messagesDiv) messagesDiv.textContent = '';
+       if (pgCostSummary) pgCostSummary.classList.add('hidden');
+       // Don't hide main payment form, just update cost summary
+       // if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+
+       try {
+            const response = await fetch(`${backendApiUrl}/api/pricing/calculate-playgroup`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'ngrok-skip-browser-warning': 'true' },
+                body: JSON.stringify({ /* semester details, bitmask, paymentType='full' */
+                    semesterStartDate: playgroupSelections.semester.start,
+                    semesterEndDate: playgroupSelections.semester.end,
+                    daysPerWeekBitmask: playgroupSelections.daysBitmask,
+                    paymentType: 'full' // Calculate as full payment
+                 })
+            });
+            if (!response.ok) { /* handle error */ throw new Error( (await response.json()).message || 'HTTP error'); }
+
+            const costDetails = await response.json();
+            playgroupSelections.calculatedCost = costDetails; // Store for reference/display
+            const detailsList = document.getElementById('pg-cost-details-list');
+            const totalSpan = document.getElementById('pg-cost-total');
+            const summaryBox = document.getElementById('playgroup-cost-summary');
+
+            if (detailsList && totalSpan && summaryBox) {
+                detailsList.innerHTML = ''; // Clear previous details
+
+                // Define which keys to display and their labels
+                const displayMap = {
+                    sessionCost: "Price Per Session",
+                    // registrationFee: "Registration Fee", // Only show if > 0 ? Usually 0 for 'full'
+                    potentialSessions: "Potential Sessions in Semester",
+                    actualSessions: "Actual Sessions (Excl. Holidays)",
+                    // totalPotentialCost: "Base Cost (Tiered)", // Maybe too confusing?
+                };
+
+                for (const key in displayMap) {
+                    if (costDetails.hasOwnProperty(key) && costDetails[key] !== undefined) {
+                        const li = document.createElement('li');
+                        li.classList.add('cost-item');
+
+                        const labelSpan = document.createElement('span');
+                        labelSpan.classList.add('cost-label');
+                        labelSpan.textContent = `${displayMap[key]}:`;
+
+                        const valueSpan = document.createElement('span');
+                        valueSpan.classList.add('cost-value');
+
+                        // Format values appropriately
+                        if (key === 'sessionCost' /* || key === 'registrationFee' || key === 'totalPotentialCost' */) {
+                            valueSpan.textContent = `$${Number(costDetails[key]).toFixed(2)}`;
+                        } else {
+                            valueSpan.textContent = costDetails[key]; // Display numbers directly
+                        }
+
+                        li.appendChild(labelSpan);
+                        li.appendChild(valueSpan);
+                        detailsList.appendChild(li);
+                    }
+                }
+                 // Display Total Actual Cost
+                totalSpan.textContent = `$${Number(costDetails.totalActualCost).toFixed(2)}`;
+
+                summaryBox.classList.remove('hidden'); // Show the formatted box
+            }
+
+       } catch (error) { console.error('Error calculating playgroup cost for display:', error);
+        if (messagesDiv) messagesDiv.textContent = `Error calculating cost: ${error.message}`;
+        playgroupSelections.calculatedCost = null; // Reset cost on error
+        }
+       finally {
+            if (calculateCostBtn) {
+                 calculateCostBtn.disabled = false;
+                 calculateCostBtn.textContent = 'Recalculate Cost'; // Or similar
+            }
+            checkBookingLoginStatus();
+       }
+   }
+
+    async function fetchAvailableSlots() {
+        // Ensure elements exist
+        if (!availableSlotsContainer || !loadingSlotsIndicator) return;
+
+        if (!selectedService || selectedService === 'playgroup' || !selectedDate) {
+             availableSlotsContainer.innerHTML = '';
+             return;
+         }
+
+        const openPlayOption = openPlayChoices ? openPlayChoices.querySelector('button.active')?.dataset.option : null;
+        if (selectedService === 'openplay' && (openPlayOption === 'punchcard' || openPlayOption === 'membership')) {
+            availableSlotsContainer.innerHTML = '';
+            return;
+        }
+
+         loadingSlotsIndicator.classList.remove('hidden');
+         availableSlotsContainer.innerHTML = ''; // Clear previous slots but keep loading indicator structure
+         availableSlotsContainer.appendChild(loadingSlotsIndicator);
+         if (messagesDiv) messagesDiv.textContent = '';
+         resetOtherBooking();
+
+         try {
+             const response = await fetch(`${backendApiUrl}/api/bookings/available-slots?serviceType=${selectedService}&date=${selectedDate}`,{
+                 headers: { 'ngrok-skip-browser-warning': 'true' } // Header for ngrok
+             });
+             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+             const slots = await response.json();
+
+             loadingSlotsIndicator.classList.add('hidden'); // Hide loading
+
+             if (slots.length === 0) {
+                 availableSlotsContainer.innerHTML = '<p>No available slots for this date.</p>';
+             } else {
+                 // Clear placeholder/loading before adding slots
+                 availableSlotsContainer.innerHTML = '';
+                 slots.forEach(slot => {
+                     const start = new Date(slot.start);
+                     const end = new Date(slot.end);
+                     const div = document.createElement('div');
+                     div.classList.add('slot');
+                     div.dataset.start = slot.start;
+                     div.dataset.end = slot.end;
+                     div.innerHTML = `
+                         <span>${start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - ${end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span>
+                         <span>${start.toLocaleDateString()}</span>
+                     `;
+                     availableSlotsContainer.appendChild(div);
+                 });
+             }
+         } catch (error) {
+             console.error('Error fetching slots:', error);
+             loadingSlotsIndicator.classList.add('hidden');
+             // Check element again before setting innerHTML
+             if (availableSlotsContainer) {
+                availableSlotsContainer.innerHTML = '<p class="error">Could not load slots. Please try again.</p>';
+             }
+         }
+     }
+
+  function handleSlotSelection(startISO, endISO) {
+      selectedSlot = { start: startISO, end: endISO };
+
+      document.querySelectorAll('.slot').forEach(el => el.classList.remove('selected'));
+      if (availableSlotsContainer) {
+          const selectedDiv = availableSlotsContainer.querySelector(`.slot[data-start="${startISO}"]`);
+          if (selectedDiv) selectedDiv.classList.add('selected');
+      }
+
+      const openPlayOption = openPlayChoices ? openPlayChoices.querySelector('button.active')?.dataset.option : null;
+      const birthdayOption = birthdayChoices ? birthdayChoices.querySelector('button.active')?.dataset.option : null;
+
+      if (selectedService === 'openplay' && openPlayOption === 'dropin') {
+         calculateOtherCost('dropin');
+      } else if (selectedService === 'birthday' && birthdayOption === '2hour') {
+         calculateOtherCost('2hour');
+      }
+
+      if (selectedSlotInfo) {
+        const start = new Date(startISO);
+        selectedSlotInfo.textContent = `${start.toLocaleDateString()} ${start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+      }
+  }
+
+   function calculateOtherCost(option) {
+       let cost = 0;
+       if (selectedService === 'openplay') {
+           if (option === 'dropin') cost = 15;
+           else if (option === 'punchcard') cost = 120;
+           else if (option === 'membership') cost = 99;
+       } else if (selectedService === 'birthday') {
+           if (option === '2hour') cost = 275;
+       }
+
+       if (cost > 0) {
+           playgroupSelections.calculatedCost = { totalActualCost: cost };
+           if (selectedCostSpan) selectedCostSpan.textContent = `$${cost.toFixed(2)}`;
+           if (costSummaryDiv) costSummaryDiv.classList.remove('hidden');
+       } else {
+           playgroupSelections.calculatedCost = null;
+           if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+       }
+       if (paymentFormDiv) paymentFormDiv.classList.add('hidden'); // Hide payment form until PI is created
+   }
+
+   async function initiateCheckout() {
+      if (!stripe) { if (messagesDiv) messagesDiv.textContent = "Payment system not loaded."; return; }
+      if (!authToken) { if (messagesDiv) messagesDiv.textContent = "Please log in first."; return; }
+      if (isCheckoutInProgress) return; // Prevent double clicks
+
+      isCheckoutInProgress = true;
+      if (checkoutButton) {
+          checkoutButton.disabled = true;
+          checkoutButton.textContent = 'Processing...';
+      }
+      if (messagesDiv) messagesDiv.textContent = 'Preparing secure checkout...';
+
+      // --- Gather Data based on State ---
+      let checkoutData = { serviceType: selectedService };
+
+      if (selectedService === 'playgroup') {
+          checkoutData = {
+              ...checkoutData,
+              paymentType: playgroupSelections.paymentType, // 'full' or 'installment'
+              semesterDetails: playgroupSelections.semester,
+              daysPerWeekBitmask: playgroupSelections.daysBitmask,
+              scheduleIds: playgroupSelections.scheduleIds,
+          };
+      } else if (selectedService === 'openplay') {
+          const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+          checkoutData.openPlayOption = openPlayOption;
+          if (openPlayOption === 'dropin') {
+              if (!selectedSlot) { /* handle error - shouldn't happen if button logic is right */ }
+              checkoutData.selectedSlot = selectedSlot;
+          }
+      } else if (selectedService === 'birthday') {
+          const partyDuration = 2; // Assuming fixed duration for now
+           if (!selectedSlot) { /* handle error */ }
+          checkoutData.selectedSlot = selectedSlot;
+          checkoutData.partyDuration = partyDuration;
+      } else {
+          if (messagesDiv) messagesDiv.textContent = "Invalid service type selected.";
+          isCheckoutInProgress = false;
+          if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+          return;
+      }
+
+
+
+      try {
+          // --- Call the unified backend endpoint ---
+          const response = await fetch(`${backendApiUrl}/api/payments/create-checkout-session`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'Authorization': `Bearer ${authToken}`,
+                  'ngrok-skip-browser-warning': 'true'
+              },
+              body: JSON.stringify(checkoutData)
+          });
+
+          if (!response.ok) {
+              const errorData = await response.json();
+              throw new Error(errorData.message || `Failed to initiate checkout (Status: ${response.status})`);
+          }
+
+          const { sessionId } = await response.json();
+
+          // --- Redirect to Stripe Checkout ---
+          if (sessionId) {
+              const { error } = await stripe.redirectToCheckout({ sessionId: sessionId });
+              if (error) {
+                  // This error typically occurs client-side before the redirect happens
+                  throw new Error(`Checkout redirect failed: ${error.message}`);
+              }
+              // If redirect succeeds, browser navigates away. Code below here may not run reliably.
+              // Reset button state in case user navigates back without completing checkout
+              // isCheckoutInProgress = false;
+              // if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+          } else {
+               throw new Error("No session ID received from server.");
+          }
+
+      } catch (error) {
+          console.error('Error initiating checkout:', error);
+          if (messagesDiv) messagesDiv.textContent = `Error: ${error.message}`;
+          isCheckoutInProgress = false; // Re-enable button on error
+          if (checkoutButton) {
+              checkoutButton.disabled = false;
+              // Restore appropriate text based on context
+               checkoutButton.textContent = (selectedService === 'playgroup' && playgroupSelections.paymentType === 'installment')
+                  ? 'Retry Payment Setup' : 'Proceed to Checkout';
+          }
+      }
+  }
+  // --- UTILITY FUNCTIONS ---
+
+  function resetForm() {
+      selectedService = null;
+      // Ensure elements exist before accessing
+      selectedDate = bookingDateInput ? bookingDateInput.value : null;
+      selectedSlot = null;
+      playgroupSelections = {
+        semester: playgroupSemesterSelect ? JSON.parse(playgroupSemesterSelect.value) : null,
+        daysBitmask: 0,
+        paymentType: 'full',
+        calculatedCost: null,
+        scheduleIds: []
+      };
+      if (serviceButtons) serviceButtons.forEach(btn => btn.classList.remove('active'));
+      if (optionsContainer) optionsContainer.classList.add('hidden');
+      if (playgroupOptions) playgroupOptions.classList.add('hidden');
+      if (otherOptions) otherOptions.classList.add('hidden');
+      if (openPlayChoices) openPlayChoices.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      if (birthdayChoices) birthdayChoices.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+      if (playgroupDaySelector) playgroupDaySelector.innerHTML = '';
+      if (pgCostSummary) pgCostSummary.classList.add('hidden');
+      if (availableSlotsContainer) availableSlotsContainer.innerHTML = '';
+      if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+      if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+      if (messagesDiv) messagesDiv.textContent = '';
+      if (checkoutButton) { // Use checkoutButton variable
+         checkoutButton.textContent = 'Proceed to Checkout';
+         checkoutButton.classList.add('hidden'); // Hide until valid selection
+         checkoutButton.disabled = true;
+     }
+      checkBookingLoginStatus(); // Re-evaluate booking section login prompt
+      // Don't necessarily need to re-run checkAuthUILoginStatus here unless logging out
+  }
+
+   function resetPlaygroupCost() {
+    playgroupSelections.calculatedCost = null; // Reset cost data state is fine
+
+// Get references to the elements *inside* the display boxes
+const detailsList = document.getElementById('pg-cost-details-list');
+const totalSpan = document.getElementById('pg-cost-total');
+const monthlyCostSpan = document.getElementById('installment-monthly-cost');
+
+// Clear the *content* of the display areas, don't hide the boxes themselves initially
+if (detailsList) detailsList.innerHTML = '<li>Calculating...</li>'; // Show placeholder
+if (totalSpan) totalSpan.textContent = '$....';
+if (monthlyCostSpan) monthlyCostSpan.textContent = '$TBD';
+   }
+
+    function resetOtherBooking() {
+        selectedSlot = null;
+        playgroupSelections.calculatedCost = null; // Use the same cost object
+
+        if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+        if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+        if (messagesDiv) messagesDiv.textContent = '';
+        if (availableSlotsContainer) {
+            availableSlotsContainer.querySelectorAll('.slot').forEach(el => el.classList.remove('selected'));
+        }
+    }
+
+  function formatDateReadable(dateString) {
+      if (!dateString) return '';
+      // Add T00:00:00 to parse as local date, avoiding timezone shifts just for display
+      const date = new Date(dateString + 'T00:00:00');
+      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  function populatePlaygroupFullCostUI(costDetails) {
+      const detailsList = document.getElementById('pg-cost-details-list');
+      const totalSpan = document.getElementById('pg-cost-total');
+
+      if (!detailsList || !totalSpan || !costDetails || costDetails.error) {
+          // Handle case where cost calculation failed or elements missing
+          if (detailsList) detailsList.innerHTML = '<li class="cost-item">Could not calculate cost.</li>';
+          if (totalSpan) totalSpan.textContent = '$?.??';
+          return;
+      }
+
+      detailsList.innerHTML = ''; // Clear previous
+      const displayMap = { /* ... same map as before ... */ sessionCost: "Price Per Session", potentialSessions: "Potential Sessions", actualSessions: "Actual Sessions" };
+
+      for (const key in displayMap) {
+         if (costDetails.hasOwnProperty(key) && costDetails[key] !== undefined) {
+              // ... (create li, labelSpan, valueSpan logic - same as before) ...
+              const li = document.createElement('li'); li.classList.add('cost-item');
+              const labelSpan = document.createElement('span'); labelSpan.classList.add('cost-label'); labelSpan.textContent = `${displayMap[key]}:`;
+              const valueSpan = document.createElement('span'); valueSpan.classList.add('cost-value');
+              if (key === 'sessionCost') { valueSpan.textContent = `$${Number(costDetails[key]).toFixed(2)}`; }
+              else { valueSpan.textContent = costDetails[key]; }
+              li.appendChild(labelSpan); li.appendChild(valueSpan);
+              detailsList.appendChild(li);
+         }
+      }
+      totalSpan.textContent = `$${Number(costDetails.totalActualCost).toFixed(2)}`;
+  }
+
+   // --- Helper to populate the Installment Plan UI ---
+   function populatePlaygroupInstallmentUI() {
+       const monthlyCostSpan = document.getElementById('installment-monthly-cost');
+       if (!monthlyCostSpan) return;
+
+       // Calculate number of days selected
+       let numberOfDaysSelected = 0; let tempMask = playgroupSelections.daysBitmask;
+       while (tempMask > 0) { tempMask &= (tempMask - 1); numberOfDaysSelected++; }
+
+       // --- Determine Monthly Cost ---
+       // IMPORTANT: This needs to match your Stripe Price setup.
+       // Fetch this from backend OR have a mapping here.
+       // Example mapping (replace with actual monthly amounts for YOUR Stripe Prices):
+       let monthlyCost = 0;
+       switch (numberOfDaysSelected) {
+            case 1: monthlyCost = 180; break; // Example: $180/month for 1 day/wk
+            case 2: monthlyCost = 320; break; // Example: $320/month for 2 days/wk
+            case 3: monthlyCost = 440; break; // Example: $440/month for 3 days/wk
+            case 4: case 5: monthlyCost = 520; break; // Example: $520/month for 4/5 days/wk
+            default: monthlyCost = 0; break;
+       }
+
+       if (monthlyCost > 0) {
+           monthlyCostSpan.textContent = `$${monthlyCost.toFixed(2)} / month`;
+       } else {
+           monthlyCostSpan.textContent = '$TBD (Select days)';
+       }
+       // You could add logic here to calculate/display number of installments based on semester dates
+   }
+
+   // Basic JWT parsing - consider a library for production robustness
+  function parseJwt (token) {
+      if (!token) return null;
+      try {
+          return JSON.parse(atob(token.split('.')[1]));
+      } catch (e) {
+          console.error("Error parsing JWT:", e);
+          return null;
+      }
+  }
+
+
+  // --- User Authentication Functions ---
+
+  // Helper: Handle Successful Authentication
+  function handleAuthSuccess(token, user) {
+      localStorage.setItem('authToken', token); // Use consistent key
+      localStorage.setItem('userId', user._id);
+      localStorage.setItem('username', user.username);
+
+      authToken = token; // Update global variable
+
+      // Update Auth UI section (check elements exist)
+      if (loginSection) loginSection.style.display = 'none';
+      if (registerSection) registerSection.style.display = 'none';
+      if (userStatusDiv) userStatusDiv.style.display = 'block';
+      if (loggedInUsernameSpan) loggedInUsernameSpan.textContent = user.username;
+
+      // Update Booking UI section
+      checkBookingLoginStatus();
+  }
+
+  // Helper: Handle Logout
+  function handleLogout() {
+      localStorage.removeItem('authToken'); // Use consistent key
+      localStorage.removeItem('userId');
+      localStorage.removeItem('username');
+
+      authToken = null; // Clear global variable
+
+      // Update Auth UI section (check elements exist)
+      if (userStatusDiv) userStatusDiv.style.display = 'none';
+      if (loginSection) loginSection.style.display = 'block';
+      if (registerSection) registerSection.style.display = 'none';
+      if (loginEmailInput) loginEmailInput.value = '';
+      if (loginPasswordInput) loginPasswordInput.value = '';
+
+      // Update Booking UI section
+      checkBookingLoginStatus();
+
+  }
+
+  // Login Form Submission Handler (async)
+  async function handleLoginFormSubmit(event) {
+      event.preventDefault();
+      // Ensure elements exist
+      if (!loginErrorDiv || !loginButton || !loginEmailInput || !loginPasswordInput) return;
+
+      loginErrorDiv.textContent = '';
+      loginButton.disabled = true;
+
+      const email = loginEmailInput.value;
+      const password = loginPasswordInput.value;
+
+      try {
+          const response = await fetch(`${backendApiUrl}/api/users/login`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                  'ngrok-skip-browser-warning': 'true' // Header for ngrok
+              },
+              body: JSON.stringify({ email, password }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+              throw new Error(data.message || `HTTP error! Status: ${response.status}`);
+          }
+
+          handleAuthSuccess(data.token, data.user);
+
+      } catch (error) {
+          console.error('Login error:', error);
+          loginErrorDiv.textContent = error.message || 'Login failed. Please try again.';
+      } finally {
+          loginButton.disabled = false;
+      }
+  }
+
+  // Register Form Submission Handler (async)
+  async function handleRegisterFormSubmit(event) {
+      event.preventDefault();
+      // Ensure elements exist
+      if (!registerErrorDiv || !registerButton || !registerUsernameInput || !registerEmailInput || !registerPasswordInput) return;
+
+      registerErrorDiv.textContent = '';
+      registerButton.disabled = true;
+
+      const username = registerUsernameInput.value;
+      const email = registerEmailInput.value;
+      const password = registerPasswordInput.value;
+
+      try {
+          const response = await fetch(`${backendApiUrl}/api/users/register`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+                   'ngrok-skip-browser-warning': 'true' // Header for ngrok
+              },
+              body: JSON.stringify({ username, email, password }),
+          });
+
+          const data = await response.json();
+
+          if (!response.ok) {
+              throw new Error(data.message || `HTTP error! Status: ${response.status}`);
+          }
+
+          handleAuthSuccess(data.token, data.user);
+
+      } catch (error) {
+          console.error('Registration error:', error);
+          registerErrorDiv.textContent = error.message || 'Registration failed. Please try again.';
+      } finally {
+          registerButton.disabled = false;
+      }
+  }
+
+
+  // Renamed: Checks login status specifically for the AUTH UI elements
+  function checkAuthUILoginStatus() {
+      const currentToken = localStorage.getItem('authToken'); // Use consistent key
+      const currentUsername = localStorage.getItem('username');
+
+      // Check if the auth HTML elements actually exist before trying to access style
+      const loginSectionExists = !!loginSection; // Check if element was found
+
+      if (currentToken && currentUsername) {
+          if (loginSectionExists) {
+              loginSection.style.display = 'none';
+              if (registerSection) registerSection.style.display = 'none';
+              if (userStatusDiv) userStatusDiv.style.display = 'block';
+              if (loggedInUsernameSpan) loggedInUsernameSpan.textContent = currentUsername;
+          }
+      } else {
+           if (loginSectionExists) {
+              if (userStatusDiv) userStatusDiv.style.display = 'none';
+              loginSection.style.display = 'block'; // Show login by default
+              if (registerSection) registerSection.style.display = 'none';
+          }
+      }
+  }
+
+
+  // --- INITIAL EXECUTION ---
+  // Run initialize ONCE after all declarations and function definitions
+  initialize();
+
+  if(window.location.toString().indexOf("user") != -1){
+    // Profile page specific JS
+    const profileContent = document.getElementById('profile-content');
+    const loadingProfile = document.getElementById('loading-profile');
+    const profileError = document.getElementById('profile-error');
+    const profileUsername = document.getElementById('profile-username');
+    const profileEmail = document.getElementById('profile-email');
+    const profilePunches = document.getElementById('profile-punches');
+    const profileMembership = document.getElementById('profile-membership');
+    const profileSubscriptionStatus = document.getElementById('profile-subscription-status');
+    const profileSubEndDateContainer = document.getElementById('profile-sub-end-date');
+    const profileSubscriptionEnd = document.getElementById('profile-subscription-end');
+    const bookingsList = document.getElementById('upcoming-bookings-list');
+    const noBookingsMsg = document.getElementById('no-bookings-msg');
+    // const customerPortalLink = document.getElementById('customer-portal-link'); // If using portal
+
+    async function loadProfileData() {
+        const token = localStorage.getItem('authToken'); // Assuming stored token
+        profileError.textContent = '';
+
+        if (!token) {
+            // Redirect to login or show message
+            loadingProfile.textContent = '';
+            profileError.textContent = 'Please log in to view your account.';
+            // window.location.href = '/login'; // Optional redirect
+            return;
+        }
+
+        try {
+            const response = await fetch(`${backendApiUrl}/api/users/me`, { // Use relative URL if on same domain or full URL
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'ngrok-skip-browser-warning': 'true' // If using ngrok for backend
+                }
+            });
+
+            if (response.status === 401) {
+                 // Handle expired/invalid token
+                 localStorage.removeItem('authToken');
+                 loadingProfile.textContent = '';
+                 profileError.textContent = 'Your session has expired. Please log in again.';
+                 // window.location.href = '/login';
+                 return;
+            }
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.message || `Error loading profile (${response.status})`);
+            }
+
+            const data = await response.json();
+            console.log("Profile Data Received:", data); // For debugging
+
+            // Populate User Details
+            if (profileUsername) profileUsername.textContent = data.user.username || 'N/A';
+            if (profileEmail) profileEmail.textContent = data.user.email || 'N/A';
+
+            // Populate Open Play Status
+            if (profilePunches) profilePunches.textContent = data.user.openPlayPunches || 0;
+            if (profileMembership) {
+                profileMembership.textContent = data.user.membershipExpiry
+                    ? new Date(data.user.membershipExpiry).toLocaleDateString()
+                    : 'N/A';
+            }
+            // Populate Subscription Status
+            if (profileSubscriptionStatus) {
+                let statusText = 'Inactive';
+                let statusClass = 'status-inactive';
+                if (data.user.hasActiveSubscription) {
+                     statusText = data.user.subscriptionStatus || 'Unknown'; // Use status from Stripe
+                     if (statusText === 'active') statusClass = 'status-active';
+                     else if (statusText === 'past_due' || statusText === 'unpaid') statusClass = 'status-error';
+                     // Capitalize first letter
+                     statusText = statusText.charAt(0).toUpperCase() + statusText.slice(1).replace(/_/g, ' ');
+
+                     // Show period end date if active
+                     if(data.user.subscriptionPeriodEnd && profileSubscriptionEnd && profileSubEndDateContainer) {
+                        profileSubscriptionEnd.textContent = new Date(data.user.subscriptionPeriodEnd).toLocaleDateString();
+                        profileSubEndDateContainer.style.display = 'block';
+                     } else if (profileSubEndDateContainer) {
+                        profileSubEndDateContainer.style.display = 'none';
+                     }
+
+                } else {
+                    if (profileSubEndDateContainer) profileSubEndDateContainer.style.display = 'none';
+                }
+                profileSubscriptionStatus.textContent = statusText;
+                profileSubscriptionStatus.className = statusClass; // Apply class for styling
+            }
+
+
+            // Populate Upcoming Bookings
+            if (bookingsList && noBookingsMsg) {
+                bookingsList.innerHTML = ''; // Clear any previous
+                if (data.upcomingBookings && data.upcomingBookings.length > 0) {
+                    noBookingsMsg.style.display = 'none';
+                    data.upcomingBookings.forEach(booking => {
+                        const li = document.createElement('div');
+                        const startDate = new Date(booking.start);
+                        const endDate = new Date(booking.end);
+                        const serviceName = booking.serviceType.charAt(0).toUpperCase() + booking.serviceType.slice(1);
+
+                        li.innerHTML = `
+                            <div class="booking-date">${startDate.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })}</div>
+                            <div><strong>${serviceName}</strong>: ${startDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} - ${endDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div>
+                            ${booking.details?.option ? `<div class="booking-details">Option: ${booking.details.option}</div>` : ''}
+                            ${booking.details?.scheduleId ? `<div class="booking-details">Ref: ${booking.details.scheduleId.slice(-6)}</div>` : ''}
+                        `;
+                        bookingsList.appendChild(li);
+                    });
+                } else {
+                    noBookingsMsg.style.display = 'block';
+                }
+            }
+
+            // Show content, hide loading
+            loadingProfile.style.display = 'none';
+            profileContent.style.display = 'block';
+
+        } catch (error) {
+            console.error("Failed to load profile:", error);
+            loadingProfile.style.display = 'none';
+            profileError.textContent = `Error loading your information: ${error.message}`;
+        }
+    }
+
+    // Load data when the page is ready
+    document.addEventListener('DOMContentLoaded', loadProfileData);
+    }
+</script>
+
+<div class="custom-account-link-wrapper" style="/* Add styles */">
+    <a href="/login" class="user-accounts-text-link header-nav-item preScale scaleIn" id="dynamic-user-account-link">Login</a>
+  </div>
+
+  cart-style-text cart-text-link sqs-custom-cart  header-icon  show-empty-cart-state cart-quantity-zero header-icon-border-shape-none header-icon-border-style-outline
+
+  <script>
+document.addEventListener('DOMContentLoaded', function() {
+  // --- CONFIGURATION ---
+  const accountLinkSelector = '.header-nav-item a[href="/login"], .header-nav-item a[href="/user"]'; // Example: Link within header nav list
+
+
+  const loginPageUrl = '/login';
+  const accountPageUrl = '/account';
+ 
+  const linkElement = document.querySelector(accountLinkSelector);
+
+  if (!linkElement) {
+    console.warn('Dynamic account link element not found with selector:', accountLinkSelector);
+  }
+
+  // --- Check Login State ---
+  const username = localStorage.getItem('username');
+
+  if (authToken) {
+    // --- User is Logged In ---
+    linkElement.textContent = username ? `Hi, ${username}` : 'My Account'; // Update text
+    linkElement.href = accountPageUrl; // Update link destination
+    console.log('Header link updated for logged-in user.');
+  } else {
+    // --- User is Logged Out ---
+    linkElement.textContent = 'Login'; // Ensure text is 'Login'
+    linkElement.href = loginPageUrl;  // Ensure link points to login page
+    console.log('Header link set for logged-out user.');
+  }
+
+  // ... (Optional Logout logic) ...
+
+});
+    </script>

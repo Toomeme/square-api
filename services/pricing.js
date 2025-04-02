@@ -1,17 +1,20 @@
 // services/pricing.js
-function calculatePlayGroupCost(daysPerWeek, paymentType, semesterStartDate, semesterEndDate, holidays) {
+function calculatePlayGroupCost(numberOfDays, daysPerWeekBitmask, paymentType, semesterStartDate, semesterEndDate, holidays)
+    {
     let sessionCost;
 
-    if (daysPerWeek === 1) {
+    if (numberOfDays === 1) {
         sessionCost = 50;
-    } else if (daysPerWeek === 2) {
-        sessionCost = 44;
-    } else if (daysPerWeek === 3) {
-        sessionCost = 40;
-    } else if (daysPerWeek >= 4 && daysPerWeek <= 5) {
-        sessionCost = 38;
+    } else if (numberOfDays === 2) {
+         sessionCost = 44;
+    } else if (numberOfDays === 3) {
+         sessionCost = 40;
+    } else if (numberOfDays === 4 || numberOfDays === 5) { // Correct logic
+         sessionCost = 38;
     } else {
-        return { error: "Invalid number of days per week." };
+        // This validation is now correct for the count
+        console.error("Validation failed for numberOfDays:", numberOfDays);
+        return { error: "Invalid number of days per week (must be 1-5)." };
     }
 
     let registrationFee = 50;
@@ -28,7 +31,7 @@ function calculatePlayGroupCost(daysPerWeek, paymentType, semesterStartDate, sem
     while (currentDate <= endDate) {
         const dayOfWeek = currentDate.getDay();
         // Check if this day of the week is one of the selected days
-        if (isDaySelected(dayOfWeek, daysPerWeek)) {
+        if (isDaySelected(dayOfWeek, daysPerWeekBitmask)) {
             potentialSessions++;
         }
         currentDate.setDate(currentDate.getDate() + 1); // Move to the next day
@@ -40,7 +43,7 @@ function calculatePlayGroupCost(daysPerWeek, paymentType, semesterStartDate, sem
 
     while (currentDate <= endDate) {
         const dayOfWeek = currentDate.getDay();
-        if (isDaySelected(dayOfWeek, daysPerWeek) && !isHoliday(currentDate, holidays)) {
+        if (isDaySelected(dayOfWeek, daysPerWeekBitmask) && !isHoliday(currentDate, holidays)) {
             actualSessions++;
         }
         currentDate.setDate(currentDate.getDate() + 1);
@@ -61,7 +64,7 @@ function calculatePlayGroupCost(daysPerWeek, paymentType, semesterStartDate, sem
 }
 
 // Helper function to check if a day of the week is selected
-function isDaySelected(dayOfWeek, daysPerWeek) {
+function isDaySelected(dayOfWeek, daysPerWeekBitmask) {
     // Use a bitmask to represent the days of the week.
     // Each bit corresponds to a day:
     //  Sunday:   1 (2^0)
@@ -75,7 +78,7 @@ function isDaySelected(dayOfWeek, daysPerWeek) {
     const dayMap = [1, 2, 4, 8, 16, 32, 64];
 
     // Check if the bit corresponding to dayOfWeek is set in daysPerWeek.
-    return (dayMap[dayOfWeek] & daysPerWeek) !== 0;
+    return (dayMap[dayOfWeek] & daysPerWeekBitmask) !== 0;
 }
 
 
@@ -101,7 +104,7 @@ function calculateOpenPlayCost(option, quantity = 1) {
             cost = 120 * quantity; //  $120 for 10 visits
             break;
         case 'membership':
-            cost = 130;
+            cost = 99;
             break;
         default:
             return { error: "Invalid Open Play option." };
