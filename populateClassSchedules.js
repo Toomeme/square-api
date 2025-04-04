@@ -1,7 +1,6 @@
 // populateDb.js (or your preferred filename)
 require('dotenv').config();
 const mongoose = require('mongoose');
-const bcrypt = require('bcrypt'); // For hashing seed passwords
 const ClassSchedule = require('./models/ClassSchedule');
 const Booking = require('./models/Booking');
 const User = require('./models/User');
@@ -12,24 +11,31 @@ const { toDate, toZonedTime, format } = require('date-fns-tz'); // Use date-fns-
 
 // --- Configuration ---
 const businessTimeZone = 'America/New_York'; // Match your booking logic
-const defaultPassword = 'password123'; // Insecure default for seeding ONLY
-const saltRounds = 10;
 
 // --- Seed Data ---
 const classSchedulesData = [
     // --- Playgroup ---
-    { serviceType: 'playgroup', dayOfWeek: 1, startTime: '09:00', endTime: '10:00', capacity: 10 }, // Mon 9-10 (Reduced Capacity)
-    { serviceType: 'playgroup', dayOfWeek: 3, startTime: '10:30', endTime: '11:30', capacity: 10 }, // Wed 10:30-11:30
-    { serviceType: 'playgroup', dayOfWeek: 5, startTime: '09:00', endTime: '10:00', capacity: 10 }, // Fri 9-10
+    { serviceType: 'playgroup', dayOfWeek: 1, startTime: '09:30', endTime: '11:00', capacity: 10 },
+    { serviceType: 'playgroup', dayOfWeek: 2, startTime: '09:30', endTime: '11:00', capacity: 10 },
+    { serviceType: 'playgroup', dayOfWeek: 3, startTime: '09:30', endTime: '11:00', capacity: 10 }, //9:30-11:00
+    { serviceType: 'playgroup', dayOfWeek: 4, startTime: '09:30', endTime: '11:00', capacity: 10 },
+    { serviceType: 'playgroup', dayOfWeek: 5, startTime: '09:30', endTime: '11:00', capacity: 10 }, 
 
     // --- Open Play ---
-    { serviceType: 'openplay', dayOfWeek: 2, startTime: '14:00', endTime: '16:00', capacity: 10 }, // Tue 2-4 PM
-    { serviceType: 'openplay', dayOfWeek: 4, startTime: '14:00', endTime: '16:00', capacity: 10 }, // Thu 2-4 PM
-    { serviceType: 'openplay', dayOfWeek: 6, startTime: '10:00', endTime: '12:00', capacity: 10 }, // Sat 10-12 PM
+    { serviceType: 'openplay', dayOfWeek: 1, startTime: '12:00', endTime: '17:00', capacity: 10 },
+    { serviceType: 'openplay', dayOfWeek: 2, startTime: '12:00', endTime: '17:00', capacity: 10 },
+    { serviceType: 'openplay', dayOfWeek: 3, startTime: '12:00', endTime: '17:00', capacity: 10 }, // Tue 12-5 PM
+    { serviceType: 'openplay', dayOfWeek: 4, startTime: '12:00', endTime: '17:00', capacity: 10 }, 
+    { serviceType: 'openplay', dayOfWeek: 5, startTime: '12:00', endTime: '17:00', capacity: 10 },
+    { serviceType: 'openplay', dayOfWeek: 6, startTime: '09:00', endTime: '15:00', capacity: 10 },
+    { serviceType: 'openplay', dayOfWeek: 7, startTime: '09:00', endTime: '15:00', capacity: 10 }, // Sat 09-03 PM
 
     // --- Birthday Parties ---
-    { serviceType: 'birthday', dayOfWeek: 6, startTime: '13:00', endTime: '15:00', capacity: 1 }, // Sat 1-3 PM (Capacity 1 for parties)
+    { serviceType: 'birthday', dayOfWeek: 6, startTime: '11:00', endTime: '13:00', capacity: 1 },
+    { serviceType: 'birthday', dayOfWeek: 6, startTime: '13:30', endTime: '15:30', capacity: 1 },
+    { serviceType: 'birthday', dayOfWeek: 6, startTime: '16:00', endTime: '18:00', capacity: 1 },
     { serviceType: 'birthday', dayOfWeek: 0, startTime: '11:00', endTime: '13:00', capacity: 1 }, // Sun 11-1 PM
+    { serviceType: 'birthday', dayOfWeek: 0, startTime: '13:30', endTime: '15:30', capacity: 1 },
 ];
 
 const seedDB = async () => {
@@ -53,12 +59,6 @@ const seedDB = async () => {
             await ClassSchedule.deleteMany({}).session(session);
             await Booking.deleteMany({}).session(session);
             console.log('Existing data cleared.');
-
-            // Hash the default password once
-            const hashedPassword = await bcrypt.hash(defaultPassword, saltRounds);
-            console.log('Hashed default password.');
-
-            let totalFakeBookings = 0;
 
             for (const scheduleData of classSchedulesData) {
                 console.log(`Processing schedule: ${scheduleData.serviceType} on day ${scheduleData.dayOfWeek} at ${scheduleData.startTime}`);
@@ -88,7 +88,6 @@ const seedDB = async () => {
                      }
                 }
 
-
                 const nextClassDateTime = new Date(zonedNow); // Start calculation from now in TZ
                 nextClassDateTime.setDate(zonedNow.getDate() + daysUntilNextClass);
 
@@ -103,65 +102,6 @@ const seedDB = async () => {
                 const endTimeUTC = toDate(zonedEndTime);     // Correct UTC Date object
 
                 console.log(` > Next Occurrence (UTC): ${startTimeUTC.toISOString()} - ${endTimeUTC.toISOString()}`);
-
-                // 3. Create Fake Users and Bookings (up to half capacity)
-                const bookingsToCreate = Math.floor(savedSchedule.capacity / 2);
-                let bookingsCreatedThisSchedule = 0;
-
-                for (let i = 0; i < bookingsToCreate; i++) {
-                    // Create a fake User
-                    const fakeUser = new User({
-                        username: `seeduser_${savedSchedule.serviceType}_${i}_${Date.now()}`,
-                        email: `seed_${savedSchedule.serviceType}_${i}_${Date.now()}@example.com`,
-                        password: hashedPassword, // Use pre-hashed password
-                        openPlayPunches: (scheduleData.serviceType === 'openplay' && i === 0) ? 5 : 0, // Give one user some punches
-                        membershipExpiry: (scheduleData.serviceType === 'openplay' && i === 1) ? new Date(Date.now() + 15 * 24 * 60 * 60 * 1000) : null, // Give one user membership
-                    });
-                    const savedUser = await fakeUser.save({ session });
-
-                    // Create a fake Booking linked to this user and schedule time
-                    const fakeBooking = new Booking({
-                        user: savedUser._id,
-                        serviceType: savedSchedule.serviceType,
-                        cost: (scheduleData.serviceType === 'birthday') ? 275 : (scheduleData.serviceType === 'openplay' ? 15 : 0), // Example costs
-                        details: {
-                            seedData: true,
-                            scheduleId: savedSchedule._id,
-                            notes: `Fake booking ${i + 1}`
-                        },
-                        start: startTimeUTC, // Use calculated UTC times
-                        end: endTimeUTC,
-                        status: 'paid', // Assume paid for seeding
-                        paymentIntentId: `pi_seed_${new mongoose.Types.ObjectId()}`, // Fake PI ID
-                        googleCalendarEventId: null, // Initialize
-                    });
-                    const savedBooking = await fakeBooking.save({ session });
-                    console.log(`   - Created User ${savedUser.username} and Booking ${savedBooking._id}`);
-
-                    // 4. Create Google Calendar Event (Main Booking Calendar)
-                    try {
-                        const bookingEvent = {
-                            summary: `${savedSchedule.serviceType.charAt(0).toUpperCase() + savedSchedule.serviceType.slice(1)} - ${savedUser.username}`,
-                            description: `Seed Data\nBooking ID: ${savedBooking._id}\nUser ID: ${savedUser._id}\nSchedule: ${savedSchedule.startTime}-${savedSchedule.endTime}`,
-                            start: { dateTime: startTimeUTC.toISOString(), timeZone: businessTimeZone },
-                            end: { dateTime: endTimeUTC.toISOString(), timeZone: businessTimeZone },
-                            attendees: [{ email: savedUser.email }],
-                        };
-                        const bookingCalendarResponse = await calendar.events.insert({
-                            calendarId: process.env.GOOGLE_CALENDAR_ID,
-                            resource: bookingEvent,
-                            sendNotifications: false, // Don't notify fake users
-                        });
-                        savedBooking.googleCalendarEventId = bookingCalendarResponse.data.id;
-                        await savedBooking.save({ session }); // Save GCal ID back to booking
-                        console.log(`     - Created GCal Booking Event: ${bookingCalendarResponse.data.id}`);
-                    } catch (gcalError) {
-                        console.error(`     - ERROR creating GCal Booking Event for ${savedBooking._id}:`, gcalError.message);
-                        // Log and continue, don't abort transaction for GCal error during seeding
-                    }
-                    totalFakeBookings++;
-                    bookingsCreatedThisSchedule++;
-                } // End fake booking loop
 
                 // 5. Create Google Calendar Event (Display Calendar - one per schedule)
                 try {
