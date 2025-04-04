@@ -13,6 +13,8 @@ const User = require('./models/User'); // Adjust path
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
+
+app.set('trust proxy', 1);
 const port = process.env.PORT || 3001;
 
 // Connect to Database
