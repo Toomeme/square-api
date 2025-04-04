@@ -573,6 +573,96 @@ router.get('/available-slots-range', async (req, res) => {
     }
 });
 
+// Add to routes/bookings.js
+
+// GET /api/bookings/by-session/:sessionId
+router.get('/by-session/:sessionId', authMiddleware, async (req, res) => {
+    const { sessionId } = req.params;
+    const userId = req.user._id; // From logged-in user token
+
+    if (!sessionId || !sessionId.startsWith('cs_')) {
+        return res.status(400).json({ message: 'Invalid Session ID format.' });
+    }
+    console.log(`--- GET BOOKING BY SESSION ${sessionId} for User ${userId} ---`);
+
+    try {
+        // 1. Retrieve Checkout Session from Stripe
+        // Expand payment_intent or subscription for easier access
+        const session = await stripe.checkout.sessions.retrieve(sessionId, {
+            expand: ['payment_intent', 'subscription'],
+        });
+
+        // Security Check: Ensure this session belongs to the logged-in user
+        // Check against metadata OR retrieve customer and check metadata there
+        if (session.metadata?.appUserId !== userId.toString()) {
+             // If checking customer: const customer = await stripe.customers.retrieve(session.customer); if(customer.metadata?.appUserId !== userId.toString()) ...
+             console.warn(`Security Alert: User ${userId} attempting to access session ${sessionId} belonging to ${session.metadata?.appUserId}`);
+             return res.status(403).json({ message: 'Forbidden: Cannot access this session.' });
+        }
+
+        // 2. Determine how to find the bookings based on session mode/metadata
+        let bookings = [];
+        const referenceId = session.mode === 'subscription' ? session.subscription?.id : session.payment_intent?.id; // Use expanded object IDs
+        const referenceType = session.mode === 'subscription' ? 'details.subscriptionId' : 'paymentIntentId';
+        const bookingType = session.metadata?.bookingType;
+
+        console.log(` > Session Mode: ${session.mode}, Ref Type: ${referenceType}, Ref ID: ${referenceId}, Booking Type: ${bookingType}`);
+
+        if (!referenceId) {
+            console.warn(` > No Payment Intent or Subscription ID found on session ${sessionId}. Cannot reliably find bookings yet.`);
+            // Return pending status or empty array? Depends on desired UX.
+            // Could also try finding based on user ID + recent timestamp + metadata, but less reliable.
+             return res.status(202).json({ status: 'pending', message: 'Booking details are processing.' }); // 202 Accepted - processing
+        }
+
+         // --- Idempotency Check --- Add logging inside the functions
+         console.log(`Checking idempotency for ${referenceType} = ${referenceId}`);
+         const existingRecord = await Booking.findOne({ [referenceType]: referenceId });
+         if (existingRecord) {
+             console.log(`WH: Idempotency check PASSED - Record already exists for ${referenceId}. Skipping.`);
+            
+         } else {
+            return res.status(202).json({ status: 'pending', message: 'Booking details are processing.' }); // 202 Accepted - processing
+        }
+
+        // 3. Query Your Database for Bookings
+        // Query using the reference ID and ensure it belongs to the correct user
+        bookings = await Booking.find({
+            user: userId,
+            [referenceType]: referenceId // Find by PI or Sub ID stored in the booking
+        })
+        .sort({ start: 1 })
+        .select('serviceType start end details cost') // Adjust fields as needed
+        .limit(150) // Limit for semester bookings
+        .lean();
+
+
+        if (bookings.length === 0) {
+            // This might happen if the webhook hasn't finished processing yet.
+            console.warn(` > No bookings found for user ${userId} with ${referenceType} ${referenceId}. Webhook might be delayed.`);
+             // Return a specific status indicating processing might still be ongoing
+             return res.status(202).json({ status: 'pending', message: 'Booking details are processing. Please check back shortly.' });
+        }
+
+        console.log(` > Found ${bookings.length} booking(s) for session ${sessionId}`);
+
+        // 4. Return Booking Details
+        res.json({
+            status: 'success',
+            bookingType: bookingType, // Pass booking type for context
+            bookings: bookings // Array of booking objects
+        });
+
+    } catch (error) {
+        console.error(`Error fetching booking by session ${sessionId}:`, error);
+        // Handle Stripe errors specifically (e.g., session not found)
+        if (error.type === 'StripeInvalidRequestError' && error.code === 'resource_missing') {
+             return res.status(404).json({ message: 'Checkout session not found.' });
+        }
+        res.status(500).json({ message: 'Error retrieving booking details.' });
+    }
+});
+
 // --- DELETE Booking ---
 router.delete('/:id', authMiddleware, async (req, res) => {
     console.log(`--- DELETE BOOKING ${req.params.id} ---`);
