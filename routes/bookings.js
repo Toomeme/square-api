@@ -10,8 +10,8 @@ const Holiday = require('../models/Holiday');
 const { authMiddleware } = require('../utils/auth');
 const mongoose = require('mongoose');
 const dateFnsTz = require('date-fns-tz');
-const { toDate, toZonedTime, format, isEqual } = dateFnsTz; // Import necessary functions
-const { isBefore } = require('date-fns');
+const { toDate, toZonedTime, format } = dateFnsTz; // Import necessary functions
+const { isBefore, isEqual } = require('date-fns');
 
 const businessTimeZone = 'America/New_York'; // Consistent TZ
 
