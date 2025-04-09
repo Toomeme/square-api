@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const dateFnsTz = require('date-fns-tz');
 const { toDate, toZonedTime, format } = dateFnsTz; // Import necessary functions
 const { isBefore, isEqual } = require('date-fns');
+const { sendAdminBookingNotification } = require('../utils/mailer');
 
 const businessTimeZone = 'America/New_York'; // Consistent TZ
 
@@ -489,6 +490,95 @@ router.get('/available-slots', async (req, res) => {
     }
 });
 
+router.get('/semester-slot-availability', authMiddleware, async (req, res) => {
+    const { scheduleId, semesterStart, semesterEnd } = req.query;
+    const today = new Date(); // Compare against today
+
+    // --- Validation ---
+    if (!scheduleId || !mongoose.Types.ObjectId.isValid(scheduleId)) return res.status(400).json({ message: 'Valid scheduleId is required.' });
+    if (!semesterStart || !semesterEnd || isNaN(new Date(semesterStart)) || isNaN(new Date(semesterEnd))) {
+        return res.status(400).json({ message: 'Valid semesterStart and semesterEnd are required.' });
+    }
+
+    console.log(`AVAIL CHECK: Schedule ${scheduleId}, Semester ${semesterStart} - ${semesterEnd}`);
+
+    try {
+        // 1. Fetch Schedule Details
+        const schedule = await ClassSchedule.findById(scheduleId).lean();
+        if (!schedule) return res.status(404).json({ message: 'Class schedule not found.' });
+        const maxCapacity = schedule.capacity;
+
+        // 2. Fetch Holidays in Range (optimization)
+        const startDate = new Date(semesterStart);
+        const endDate = new Date(semesterEnd);
+        const holidays = await Holiday.find({ date: { $gte: startDate, $lte: endDate } }).lean();
+        const holidayDates = holidays.map(h => h.date);
+        const isHoliday = (date, holidaysArr) => { /* ... your UTC comparison logic ... */ };
+
+        // 3. Iterate and Count (Focus on finding minimum remaining capacity)
+        let minRemainingCapacity = maxCapacity; // Start assuming full availability
+        let isEverFull = false;
+        let currentDate = new Date(startDate);
+        let checkedFutureDates = 0;
+
+        while (currentDate <= endDate && minRemainingCapacity > 0) { // Stop if we find a full slot
+            const zonedCurrentDate = toZonedTime(currentDate, businessTimeZone);
+            const dayOfWeekInTZ = zonedCurrentDate.getDay();
+
+            if (dayOfWeekInTZ === schedule.dayOfWeek && !isHoliday(currentDate, holidayDates)) {
+                // Calculate specific slot times for this date
+                const dateStr = format(zonedCurrentDate, 'yyyy-MM-dd');
+                const startString = `${dateStr}T${schedule.startTime}:00`;
+                const endString = `${dateStr}T${schedule.endTime}:00`;
+                const zonedStartTime = toZonedTime(startString, businessTimeZone);
+                const startTimeUTC = toDate(zonedStartTime);
+                const zonedEndTime = toZonedTime(endString, businessTimeZone);
+                const endTimeUTC = toDate(zonedEndTime);
+
+                // Only check dates/slots from today onwards
+                if (!isBefore(startTimeUTC, today)) {
+                    checkedFutureDates++;
+                    // Count bookings for this specific instance
+                    const count = await Booking.countDocuments({
+                        // Consider indexing this query: scheduleId + start + status?
+                        // classScheduleId: scheduleId, // If you add this field to Booking model
+                        serviceType: schedule.serviceType, // Assuming playgroup
+                        start: startTimeUTC,
+                        // end: endTimeUTC, // Optional: start time might be sufficient if unique
+                        status: { $in: ['paid', 'confirmed'] }
+                    });
+
+                    const remaining = maxCapacity - count;
+                    minRemainingCapacity = Math.min(minRemainingCapacity, remaining);
+
+                    // console.log(`AVAIL CHECK: ${dateStr} ${schedule.startTime} - Count=${count}, Remaining=${remaining}, MinSoFar=${minRemainingCapacity}`); // Debug log
+
+                    if (remaining <= 0) {
+                        isEverFull = true;
+                        break; // Found a full date, no need to check further
+                    }
+                }
+            }
+            currentDate.setDate(currentDate.getDate() + 1);
+        } // end while loop
+
+        // 4. Return Result
+        const result = {
+            scheduleId: scheduleId,
+            maxCapacity: maxCapacity,
+            // Return the minimum found, or 0 if any date was full
+            minRemainingCapacity: isEverFull ? 0 : minRemainingCapacity,
+            checkedFutureDates: checkedFutureDates // Info about how many dates were checked
+        };
+        console.log(`AVAIL CHECK RESULT for ${scheduleId}:`, result);
+        res.json(result);
+
+    } catch (error) {
+        console.error(`Error checking availability for schedule ${scheduleId}:`, error);
+        res.status(500).json({ message: 'Error checking slot availability.' });
+    }
+});
+
 // --- GET Available Slots for a Date Range ---
 router.get('/available-slots-range', async (req, res) => {
     console.log("--- AVAILABLE SLOTS RANGE HANDLER START ---");
@@ -851,25 +941,50 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
                                 // 3. Mark Bookings as Created on User (if successful)
                                 await User.findByIdAndUpdate(appUserId, { playgroupBookingsCreatedForSub: subscriptionId });
                                 console.log(`WH: Successfully created ${createdBookings.length} bookings and updated user flag for sub ${subscriptionId}`);
+                                if (createdBookings.length > 0) {
+                                    // Send details of the first booking as representative, plus count
+                                    const representativeBooking = await Booking.findById(createdBookings[0]._id).populate('user', 'username email').lean(); // Fetch with user info
+                                    if (representativeBooking) {
+                                         await sendAdminBookingNotification({
+                                             ...representativeBooking, // Spread booking details
+                                             _id: `Semester (${createdBookings.length} sessions)`, // Modify ID display
+                                             serviceType: 'Playgroup Semester (Installment)' // Modify service display
+                                         });
+                                     }
+                                 }
 
                             } else if (bookingType === 'playgroup_full') {
                                 const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error("Missing PI for full playgroup.");
                                 console.log(`WH: Calling createSemesterBookingsOneTime for PI ${paymentIntentId}...`);
-                                await createSemesterBookingsOneTime(appUserId, otherMetadata.semesterStart, otherMetadata.semesterEnd, JSON.parse(otherMetadata.scheduleIds || '[]'), paymentIntentId);
+                                const createdBookings = await createSemesterBookingsOneTime(appUserId, otherMetadata.semesterStart, otherMetadata.semesterEnd, JSON.parse(otherMetadata.scheduleIds || '[]'), paymentIntentId);
+                                if (createdBookings.length > 0) {
+                                    const representativeBooking = await Booking.findById(createdBookings[0]._id).populate('user', 'username email').lean();
+                                    if (representativeBooking) {
+                                         await sendAdminBookingNotification({
+                                             ...representativeBooking,
+                                             _id: `Semester (${createdBookings.length} sessions)`,
+                                             serviceType: 'Playgroup Semester (Full Payment)'
+                                         });
+                                     }
+                                 }
 
                             } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday') {
                                 const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
                                 if (!otherMetadata.slotStart || !otherMetadata.slotEnd) throw new Error(`Missing slot data for ${bookingType}.`);
                                 console.log(`WH: Calling createSlotBooking for PI ${paymentIntentId}...`);
-                                await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, otherMetadata);
+                                const savedBooking = await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, otherMetadata);
+                                const populatedBooking = await Booking.findById(savedBooking._id).populate('user', 'username email').lean();
+                         if (populatedBooking) await sendAdminBookingNotification(populatedBooking);
 
                             } else if (bookingType === 'openplay_purchase') {
                                 const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error("Missing PI for openplay_purchase.");
                                 if (!otherMetadata.openPlayOption) throw new Error("Missing openPlayOption.");
                                 console.log(`WH: Calling updateUserPurchase for PI ${paymentIntentId}...`);
-                                await updateUserPurchase(appUserId, otherMetadata.openPlayOption, paymentIntentId, otherMetadata);
-
-                            } else { console.warn(`WH: Unhandled bookingType: ${bookingType}`); }
+                                const { updatedUser, purchaseRecord } = await updateUserPurchase(appUserId, otherMetadata.openPlayOption, paymentIntentId, otherMetadata);
+                                const populatedRecord = await Booking.findById(purchaseRecord._id).populate('user', 'username email').lean();
+                                if (populatedRecord) await sendAdminBookingNotification(populatedRecord);
+       
+                           } else { console.warn(`WH: Unhandled bookingType: ${bookingType}`); }
 
                             console.log(`WH: Successfully completed fulfillment logic for ${bookingType} / session ${session.id}`);
 

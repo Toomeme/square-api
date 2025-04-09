@@ -18,6 +18,7 @@ const holidaysToSeed = [
     { name: "Independence Day", date: "2025-07-04" },
     { name: "Normal Closed", date: "2025-04-06" },
     { name: "Normal Closed", date: "2025-04-07" },
+    { name: "Normal Closed", date: "2025-04-08" },
     { name: "Normal Closed", date: "2025-04-09" },
     { name: "Normal Closed", date: "2025-04-10" },
     { name: "Normal Closed", date: "2025-04-11" },
