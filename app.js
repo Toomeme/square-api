@@ -7,6 +7,7 @@ const paymentRoutes = require('./routes/payments');
 const userRoutes = require('./routes/users');
 const pricingRoutes = require('./routes/pricing');
 const classScheduleRoutes = require('./routes/classSchedules');
+//const adminApiRoutes = require('./routes/bookings');
 
 const cron = require('node-cron');
 const User = require('./models/User'); // Adjust path
@@ -32,6 +33,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/users', userRoutes); // Add user routes
 app.use('/api/pricing', pricingRoutes);         // <-- Use pricing routes
 app.use('/api/class-schedules', classScheduleRoutes);
+//app.use('/api/admin', adminApiRoutes);
 
 // Basic Error Handling
 app.use((err, req, res, next) => {

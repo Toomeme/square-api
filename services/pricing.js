@@ -17,7 +17,7 @@ function calculatePlayGroupCost(numberOfDays, daysPerWeekBitmask, paymentType, s
         return { error: "Invalid number of days per week (must be 1-5)." };
     }
 
-    let registrationFee = 50;
+    let registrationFee = 25;
     if (paymentType === 'full') {
         registrationFee = 0;
     }

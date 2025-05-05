@@ -288,7 +288,7 @@
                    <span class="capacity-info" id="${capacitySpanId}">(Max: ${schedule.capacity})</span>
                `;
                playgroupDaySelector.appendChild(div);
-
+               const checkbox = div.querySelector('input[type="checkbox"]');
                checkbox.addEventListener('change', (e) => {
                  handlePlaygroupDaySelection(e);
                  updatePlaygroupPaymentDisplays(); // Update payment options display
@@ -427,6 +427,67 @@
            logoutButton.addEventListener('click', handleLogout);
        }
   }
+
+  async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId) {
+    const capacitySpan = document.getElementById(capacitySpanId);
+    if (!capacitySpan) return;
+
+    capacitySpan.textContent = "(Checking...)"; // Update placeholder
+
+    // Get current semester dates (ensure playgroupSelections.semester is up-to-date)
+    const currentSemester = playgroupSelections.semester;
+    if (!currentSemester || !currentSemester.start || !currentSemester.end) {
+        console.warn("Semester dates not available for capacity check:", scheduleId);
+        capacitySpan.textContent = "(Info unavailable)";
+        return;
+    }
+
+    try {
+        const token = localStorage.getItem('authToken');
+        if (!token) { // Need auth if endpoint is protected
+             capacitySpan.textContent = "(Login required)";
+             return;
+        }
+
+        const response = await fetch(
+            `${backendApiUrl}/api/bookings/semester-slot-availability?scheduleId=${scheduleId}&semesterStart=${currentSemester.start}&semesterEnd=${currentSemester.end}`,
+            {
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'ngrok-skip-browser-warning': 'true'
+                }
+            }
+        );
+
+        if (!response.ok) {
+            console.error(`Failed to fetch capacity for ${scheduleId}: ${response.status}`);
+            capacitySpan.textContent = "(Error)";
+            return;
+        }
+
+        const availabilityData = await response.json();
+
+        // Update the span content
+        if (availabilityData.minRemainingCapacity !== undefined) {
+            if (availabilityData.minRemainingCapacity <= 0) {
+                capacitySpan.textContent = `(Currently Full)`;
+                capacitySpan.style.color = 'red';
+                // Optionally disable the checkbox if full?
+                const checkbox = document.getElementById(`schedule-${scheduleId}`);
+                // if (checkbox) checkbox.disabled = true;
+            } else {
+                capacitySpan.textContent = `(Available: ${availabilityData.minRemainingCapacity}/${availabilityData.maxCapacity})`;
+                capacitySpan.style.color = 'green'; // Or default color
+            }
+        } else {
+            capacitySpan.textContent = "(Info unavailable)";
+        }
+
+    } catch (error) {
+        console.error(`Error fetching capacity for ${scheduleId}:`, error);
+        capacitySpan.textContent = "(Error)";
+    }
+}
 
    // --- *** NEW/REVISED: Updates both payment display areas for Playgroup *** ---
    async function updatePlaygroupPaymentDisplays() {
