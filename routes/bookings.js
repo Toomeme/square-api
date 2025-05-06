@@ -2,7 +2,6 @@
 const express = require('express');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const calendar = require('../config/googleCalendar'); // Google Calendar API client
 const Booking = require('../models/Booking');
 const User = require('../models/User');
 const ClassSchedule = require('../models/ClassSchedule');
@@ -235,50 +234,6 @@ async function createSemesterBookings(userId, semesterStart, semesterEnd, schedu
                         const savedBooking = await newBooking.save({ session });
                         await User.findByIdAndUpdate(userObjectId, { $push: { classes: savedBooking._id } }).session(session);
 
-                        // GCal Event (Main Booking Calendar)
-                        try {
-                            const bookingEvent = {
-                                summary: `Playgroup - ${user.username || userObjectId}`,
-                                description: `User ID: ${userId}\nSub ID: ${subscriptionId}\nBooking ID: ${savedBooking._id}`,
-                                start: { dateTime: startTimeUTC.toISOString(), timeZone: businessTimeZone },
-                                end: { dateTime: endTimeUTC.toISOString(), timeZone: businessTimeZone },
-                                attendees: user.email ? [{ email: user.email }] : [],
-                            };
-                            const bookingCalendarResponse = await calendar.events.insert({
-                                calendarId: process.env.GOOGLE_CALENDAR_ID, resource: bookingEvent, sendNotifications: false,
-                            });
-                            savedBooking.googleCalendarEventId = bookingCalendarResponse.data.id;
-                            await savedBooking.save({ session });
-                            console.log(`SERVICE: GCal Booking event created: ${bookingCalendarResponse.data.id}`);
-                        } catch (gcalError) {
-                            console.error(`SERVICE: WARN - Failed to create GCal Booking event for booking ${savedBooking._id}:`, gcalError.message);
-                            // Continue even if GCal fails
-                        }
-
-                        // GCal Event Update (Display Calendar)
-                        if (schedule.displayCalendarEventId) {
-                            try {
-                                const newCount = existingBookingsCount + 1;
-                                const descriptionUpdate = `Capacity: ${schedule.capacity}\nBookings: ${newCount}`;
-                                let patchBody = { description: descriptionUpdate };
-                                // If class just became full, mark as busy
-                                if (newCount === schedule.capacity) {
-                                    patchBody.transparency = 'opaque';
-                                    console.log(`SERVICE: Marking display event ${schedule.displayCalendarEventId} as BUSY.`);
-                                }
-                                await calendar.events.patch({
-                                    calendarId: process.env.DISPLAY_CALENDAR_ID,
-                                    eventId: schedule.displayCalendarEventId,
-                                    requestBody: patchBody,
-                                });
-                                console.log(`SERVICE: Updated GCal Display event: ${schedule.displayCalendarEventId}`);
-                            } catch (displayGcalError) {
-                                console.error(`SERVICE: WARN - Failed to update GCal Display event ${schedule.displayCalendarEventId}:`, displayGcalError.message);
-                            }
-                        } else {
-                            console.warn(`SERVICE: No displayCalendarEventId found for ClassSchedule ${schedule._id} to update.`);
-                        }
-
                         createdBookings.push(savedBooking);
                     } // end loop schedules for day
                 } else { console.log(`SERVICE: Skipping holiday ${format(currentDate, 'yyyy-MM-dd')}`); }
@@ -427,10 +382,6 @@ async function createSemesterBookingsOneTime(userId, semesterStart, semesterEnd,
                         createdBookings.push(savedBooking);
                         console.log(`SERVICE LOOP: Booking ${savedBooking._id} created.`);
 
-                        // GCal Events (Optional, keep logging minimal unless debugging GCal)
-                        try { /* ... GCal Main ... */ console.log(`SERVICE LOOP: GCal Main attempt.`); } catch (e) { console.error("WARN: GCal main failed", e.message) }
-                        if (schedule.displayCalendarEventId) { try { /* ... GCal Display Update ... */ console.log(`SERVICE LOOP: GCal Display attempt.`); } catch (e) { console.error("WARN: GCal display failed", e.message) } }
-
                     } // End inner schedule loop
                 } else {
                     console.log(`SERVICE LOOP: Skipped - Holiday`);
@@ -492,10 +443,6 @@ async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymen
         });
         const savedBooking = await newBooking.save({ session });
         await User.findByIdAndUpdate(userObjectId, { $push: { classes: savedBooking._id } }).session(session);
-
-        // GCal Events (Main & Display Update)
-        try { /* ... GCal Main ... */ } catch (e) { console.error("WARN: GCal main failed", e.message) }
-        if (classSchedule.displayCalendarEventId) { try { /* ... GCal Display Update ... */ } catch (e) { console.error("WARN: GCal display failed", e.message) } }
 
         await session.commitTransaction();
         console.log(`SERVICE: Transaction committed. Slot booking ${savedBooking._id} created for PI ${paymentIntentId}.`);
@@ -569,7 +516,7 @@ router.get('/available-slots', async (req, res) => {
             const zonedEndTime = toZonedTime(endString, businessTimeZone);
             const endTimeUTC = toDate(zonedEndTime);
 
-            if (isBefore(startTimeUTC, today)) continue; // Skip past slots
+            if (isBefore(endTimeUTC, today)) continue; // Skip past slots
 
             const existingBookingsCount = await Booking.countDocuments({
                 serviceType: serviceType, start: startTimeUTC, end: endTimeUTC,
@@ -577,16 +524,7 @@ router.get('/available-slots', async (req, res) => {
             });
 
             if (existingBookingsCount < schedule.capacity) {
-                let isBusyGcal = false;
-                // GCal Check (optional)
-                try {
-                    const response = await calendar.freebusy.query({ /* ... */ });
-                    // ... parse response ... isBusyGcal = ...
-                } catch (gcalError) { console.error("WARN: GCal freebusy check failed:", gcalError.message); }
-
-                if (!isBusyGcal) {
                     availableSlots.push({ start: startTimeUTC.toISOString(), end: endTimeUTC.toISOString() });
-                }
             }
         }
         res.json(availableSlots);
@@ -749,13 +687,7 @@ router.get('/available-slots-range', async (req, res) => {
                 const existingBookingsCount = await Booking.countDocuments({ /* ... */ });
 
                 if (existingBookingsCount < schedule.capacity) {
-                    let isBusyGcal = false;
-                    // GCal Check (optional)
-                    try { /* ... GCal freebusy query ... */ } catch (gcalError) { console.error("WARN: GCal range check failed:", gcalError.message); }
-
-                    if (!isBusyGcal) {
                         results[currentDateStr].push({ start: startTimeUTC.toISOString(), end: endTimeUTC.toISOString() });
-                    }
                 }
             } // End schedule loop
             currentDate.setDate(currentDate.getDate() + 1); // Increment standard Date object
@@ -877,67 +809,8 @@ router.delete('/:id', authMiddleware, async (req, res) => {
             // return res.status(400).json({ message: 'Cannot delete past bookings.' });
         }
 
-
-        // --- GCal (Main) Deletion ---
-        if (booking.googleCalendarEventId) {
-            try {
-                await calendar.events.delete({
-                    calendarId: process.env.GOOGLE_CALENDAR_ID,
-                    eventId: booking.googleCalendarEventId,
-                });
-                console.log("Deleted GCal main event:", booking.googleCalendarEventId);
-            } catch (gcalErr) {
-                // Ignore "Not Found" errors, log others
-                if (gcalErr.code !== 404) {
-                    console.error("WARN: Failed to delete GCal main event:", gcalErr.message);
-                } else {
-                    console.log("Gcal main event already deleted or never existed.");
-                }
-            }
-        }
-
-        // --- GCal (Display) Update ---
-        // Find relevant ClassSchedule to update display event
-        const zonedStartTime = toZonedTime(new Date(booking.start), businessTimeZone);
-        const dayOfWeekInTZ = zonedStartTime.getDay();
-        const startTimeString = format(zonedStartTime, 'HH:mm');
-        const zonedEndTime = toZonedTime(new Date(booking.end), businessTimeZone);
-        const endTimeString = format(zonedEndTime, 'HH:mm');
-
-        const classSchedule = await ClassSchedule.findOne({
-            serviceType: booking.serviceType, dayOfWeek: dayOfWeekInTZ,
-            startTime: startTimeString, endTime: endTimeString,
-        }).session(session).lean(); // Lean for read-only
-
-        if (classSchedule && classSchedule.displayCalendarEventId) {
-            // Count bookings *after* this one is removed
-            const remainingBookingsCount = await Booking.countDocuments({
-                _id: { $ne: booking._id }, // Exclude current booking
-                serviceType: booking.serviceType, start: booking.start, end: booking.end,
-                status: { $in: ['pending', 'paid', 'confirmed'] }
-            }).session(session);
-
-            try {
-                let patchBody = { description: `Capacity: ${classSchedule.capacity}\nBookings: ${remainingBookingsCount}` };
-                // If class WAS full and now isn't
-                if (remainingBookingsCount === classSchedule.capacity - 1) {
-                    patchBody.transparency = 'transparent'; // Mark as free again
-                    console.log(`Marking display event ${classSchedule.displayCalendarEventId} as FREE again.`);
-                }
-                await calendar.events.patch({
-                    calendarId: process.env.DISPLAY_CALENDAR_ID,
-                    eventId: classSchedule.displayCalendarEventId,
-                    requestBody: patchBody,
-                });
-                console.log(`Updated GCal Display event ${classSchedule.displayCalendarEventId} count to ${remainingBookingsCount}.`);
-            } catch (displayErr) {
-                console.error("WARN: Failed to update GCal Display event:", displayErr.message);
-            }
-        }
-
         // --- Database Update (Soft Delete) ---
         booking.status = 'cancelled';
-        booking.googleCalendarEventId = null; // Remove link
         await booking.save({ session });
         console.log("Booking marked as cancelled:", booking._id);
 
