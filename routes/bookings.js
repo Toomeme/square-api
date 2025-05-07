@@ -452,7 +452,7 @@ async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymen
         createdBookingsThisSlot.push(savedBooking);    
     }
         await session.commitTransaction();
-        console.log(`SERVICE: Transaction committed. Slot booking ${savedBooking._id} created for PI ${paymentIntentId}.`);
+        console.log(`SERVICE: Transaction committed. Slot booking ${createdBookingsThisSlot.length} created for PI ${paymentIntentId}.`);
         return createdBookingsThisSlot;
 
     } catch (err) {
