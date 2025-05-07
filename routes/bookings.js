@@ -409,7 +409,7 @@ async function createSemesterBookingsOneTime(userId, semesterStart, semesterEnd,
     }
 }
 
-async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymentIntentId, metadata = {}) {
+async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymentIntentId, quantity, metadata = {}) {
     console.log(`SERVICE: Creating slot booking (${serviceType}) for user ${userId}, PI: ${paymentIntentId}`);
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -433,9 +433,15 @@ async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymen
         const existingBookingsCount = await Booking.countDocuments({
             serviceType, start: startTime, end: endTime, status: { $in: ['pending', 'paid', 'confirmed'] }
         }).session(session);
-        if (existingBookingsCount >= classSchedule.capacity) throw new Error('Booking failed: This time slot is now full.');
+        const neededCapacity = parseInt(quantity, 10) || 1;
+        const remainingCapacity = classSchedule.capacity - existingCount;
+        if (neededCapacity > remainingCapacity) {
+            throw new Error(`Insufficient capacity. Needed: ${neededCapacity}, Available: ${remainingCapacity}`);
+        }
 
         // Create Booking
+        const createdBookingsThisSlot = [];
+        for (let i = 0; i < neededCapacity; i++) {
         const newBooking = new Booking({
             user: userObjectId, serviceType, cost: metadata.calculatedAmount ? metadata.calculatedAmount / 100 : 0, // Get cost from metadata if available
             details: { ...metadata, scheduleId: classSchedule._id, paymentIntentId }, // Store metadata and PI
@@ -443,10 +449,12 @@ async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymen
         });
         const savedBooking = await newBooking.save({ session });
         await User.findByIdAndUpdate(userObjectId, { $push: { classes: savedBooking._id } }).session(session);
-
+        createdBookingsThisSlot.push(savedBooking);    
+    }
         await session.commitTransaction();
         console.log(`SERVICE: Transaction committed. Slot booking ${savedBooking._id} created for PI ${paymentIntentId}.`);
-        return savedBooking;
+        return createdBookingsThisSlot;
+
     } catch (err) {
         console.error(`SERVICE: Error creating slot booking for PI ${paymentIntentId}:`, err);
         if (session.inTransaction()) await session.abortTransaction();
@@ -997,8 +1005,13 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
                             } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday') {
                                 const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
                                 if (!otherMetadata.slotStart || !otherMetadata.slotEnd) throw new Error(`Missing slot data for ${bookingType}.`);
-                                console.log(`WH: Calling createSlotBooking for PI ${paymentIntentId}...`);
-                                const savedBooking = await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, otherMetadata);
+                                let itemDetails;
+                                try { itemDetails = JSON.parse(otherMetadata.originalItemDetails || '{}'); } // Use otherMetadata
+                                catch(e) { console.error("WH Error: Failed to parse originalItemDetails"); break; }
+        
+                                const quantityToBook = parseInt(itemDetails.quantity, 10) || 1;
+                                console.log(`WH: Calling createSlotBooking for PI ${paymentIntentId} with quantity ${quantityToBook}`);
+                                const savedBooking = await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, quantityToBook, otherMetadata);
                                 const populatedBooking = await Booking.findById(savedBooking._id).populate('user', 'username email').lean();
                          if (populatedBooking) await sendAdminBookingNotification(populatedBooking);
 
