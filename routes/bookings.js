@@ -434,7 +434,7 @@ async function createSlotBooking(userId, slotStart, slotEnd, serviceType, paymen
             serviceType, start: startTime, end: endTime, status: { $in: ['pending', 'paid', 'confirmed'] }
         }).session(session);
         const neededCapacity = parseInt(quantity, 10) || 1;
-        const remainingCapacity = classSchedule.capacity - existingCount;
+        const remainingCapacity = classSchedule.capacity - existingBookingsCount;
         if (neededCapacity > remainingCapacity) {
             throw new Error(`Insufficient capacity. Needed: ${neededCapacity}, Available: ${remainingCapacity}`);
         }
