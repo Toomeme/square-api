@@ -18,6 +18,9 @@
   let fetchedSlotsRange = {};
 
   // --- STATE VARIABLES ---
+  let selectedItemsForCheckout = []; // Replaces simple selectedSlot for multi-item/qty
+  const COST_PER_OPENPLAY_DROPIN = 15.00; // Define costs
+  const COST_PER_BIRTHDAY = 275.00;
   let selectedService = null;
   let selectedDate = null;
   let selectedSlot = null; // For Open Play / Birthday
@@ -129,7 +132,7 @@
       const sortedDates = Object.keys(fetchedSlotsRange).sort(); // Sort dates chronologically
 
       if (sortedDates.length === 0 || sortedDates.every(date => fetchedSlotsRange[date].length === 0)) {
-          availableSlotsContainer.innerHTML = '<p>No available slots found in the upcoming days.</p>';
+          availableSlotsContainer.innerHTML = '<p>No available slots found on the selected day.</p>';
           return;
       }
 
@@ -215,22 +218,16 @@
   }
 
   function isSelectionValidForCheckout() {
-      if (!selectedService) return false;
-      if (!authToken) return false; // Cannot proceed if not logged in
+    if (!selectedService || !authToken) return false;
 
-      if (selectedService === 'playgroup') {
-          // Only requires semester and days now, payment type is selected later
-          return playgroupSelections.semester && playgroupSelections.daysBitmask > 0;
-      } else if (selectedService === 'openplay') {
-          const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
-          if (!openPlayOption) return false;
-          return openPlayOption === 'dropin' ? !!selectedSlot : true; // Drop-in needs slot
-      } else if (selectedService === 'birthday') {
-           const birthdayOption = birthdayChoices?.querySelector('button.active')?.dataset.option;
-           return birthdayOption && !!selectedSlot; // Birthday needs option and slot
-      }
-      return false;
-  }
+    if (selectedService === 'playgroup') {
+        return playgroupSelections.semester && playgroupSelections.daysBitmask > 0;
+    } else if (selectedService === 'openplay' || selectedService === 'birthday') {
+        // Now checks if selectedSlot (which contains quantity and details) is set
+        return !!selectedSlot && selectedSlot.quantity > 0;
+    }
+    return false;
+}
 
 
   function populateSemesterDropdown() {
@@ -900,48 +897,139 @@
      }
 
   function handleSlotSelection(startISO, endISO) {
-      selectedSlot = { start: startISO, end: endISO };
+    const currentItem = {
+        serviceType: selectedService,
+        start: startISO,
+        end: endISO,
+        quantity: 1, // Default quantity
+        costPerUnit: 0
+    };
 
-      document.querySelectorAll('.slot').forEach(el => el.classList.remove('selected'));
-      if (availableSlotsContainer) {
-          const selectedDiv = availableSlotsContainer.querySelector(`.slot[data-start="${startISO}"]`);
-          if (selectedDiv) selectedDiv.classList.add('selected');
-      }
+    if (selectedService === 'openplay') {
+        const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+        if (openPlayOption === 'dropin') {
+            currentItem.costPerUnit = COST_PER_OPENPLAY_DROPIN;
+            currentItem.openPlayOption = 'dropin'; // Store option
+        } else {
+            // For punchcard/membership, we don't select individual slots this way
+            //console.log("Slot selection not applicable for non-drop-in Open Play.");
+            return; // Or handle differently
+        }
+    } else if (selectedService === 'birthday') {
+        currentItem.costPerUnit = COST_PER_BIRTHDAY;
+        currentItem.partyDuration = 2; // Assuming fixed
+    } else {
+        //console.log("Slot selection not applicable for service:", selectedService);
+        return;
+    }
 
-      const openPlayOption = openPlayChoices ? openPlayChoices.querySelector('button.active')?.dataset.option : null;
-      const birthdayOption = birthdayChoices ? birthdayChoices.querySelector('button.active')?.dataset.option : null;
+    // For this example, we'll assume only ONE slot can be selected before checkout,
+    // but we allow quantity for it.
+    // If you build a full cart, you'd push to an array here.
+    selectedSlot = currentItem; // Keep using selectedSlot for now, but it holds quantity.
 
-      if (selectedService === 'openplay' && openPlayOption === 'dropin') {
-         calculateOtherCost('dropin');
-      } else if (selectedService === 'birthday' && birthdayOption === '2hour') {
-         calculateOtherCost('2hour');
-      }
-
-      if (selectedSlotInfo) {
-        const start = new Date(startISO);
-        selectedSlotInfo.textContent = `${start.toLocaleDateString()} ${start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
-      }
+    updateSelectedSlotUIDisplay(); // New function to show selected slot and quantity input
+    checkBookingLoginStatus(); // Updates checkout button
   }
 
-   function calculateOtherCost(option) {
-       let cost = 0;
-       if (selectedService === 'openplay') {
-           if (option === 'dropin') cost = 15;
-           else if (option === 'punchcard') cost = 120;
-           else if (option === 'membership') cost = 99;
-       } else if (selectedService === 'birthday') {
-           if (option === '2hour') cost = 275;
-       }
+  function updateSelectedSlotUIDisplay() {
+    if (!selectedSlotInfo || !costSummaryDiv || !selectedCostSpan) return;
 
-       if (cost > 0) {
-           playgroupSelections.calculatedCost = { totalActualCost: cost };
-           if (selectedCostSpan) selectedCostSpan.textContent = `$${cost.toFixed(2)}`;
-           if (costSummaryDiv) costSummaryDiv.classList.remove('hidden');
-       } else {
-           playgroupSelections.calculatedCost = null;
-           if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
-       }
-       if (paymentFormDiv) paymentFormDiv.classList.add('hidden'); // Hide payment form until PI is created
+    if (selectedSlot) {
+        const start = new Date(selectedSlot.start);
+        let displayServiceType = selectedSlot.serviceType.toUpperCase();
+        let displayOpenPlayOption = selectedSlot.openPlayOption;
+        if (displayServiceType == "OPENPLAY"){
+            displayServiceType == "Open Play"
+        }
+        else if (displayServiceType == "PLAYGROUP"){
+            displayServiceType == "Play Group"
+        }
+        else if (displayServiceType == "BIRTHDAY"){
+            displayServiceType == "Birthday"
+        }
+        else{
+            displayServiceType == selectedSlot.serviceType.toUpperCase();
+        }
+        if (selectedSlot.openPlayOption == "dropin"){
+            selectedSlot.openPlayOption = "drop in";
+        }
+        else{
+            selectedSlot.openPlayOption;
+        }
+        let displayHTML = `
+            <p>${displayServiceType}
+               ${selectedSlot.openPlayOption ? '(' + displayOpenPlayOption + ')' : ''} <br>
+               ${start.toLocaleDateString()} ${start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+            </p>
+            <div>
+                <label for="selected-item-quantity">Number of Children:</label>
+                <input type="number" id="selected-item-quantity" value="${selectedSlot.quantity}" min="1" style="width: 60px;">
+            </div>
+        `;
+        selectedSlotInfo.innerHTML = displayHTML;
+
+        // Add listener to the new quantity input
+        const quantityInput = document.getElementById('selected-item-quantity');
+        if (quantityInput) {
+            quantityInput.addEventListener('change', (e) => {
+                let newQuantity = parseInt(e.target.value, 10);
+                if (isNaN(newQuantity) || newQuantity < 1) {
+                    newQuantity = 1; // Default to 1 if invalid
+                    e.target.value = newQuantity; // Correct input field
+                }
+                selectedSlot.quantity = newQuantity;
+                updateTotalCostDisplay();
+                checkBookingLoginStatus(); // Re-check if checkout possible (e.g., if capacity check was client-side)
+            });
+        }
+        updateTotalCostDisplay();
+        costSummaryDiv.classList.remove('hidden');
+    } else {
+        selectedSlotInfo.innerHTML = 'N/A';
+        costSummaryDiv.classList.add('hidden');
+    }
+}
+
+function updateTotalCostDisplay() {
+    if (!selectedSlot || !selectedCostSpan) return;
+
+    const totalCost = selectedSlot.costPerUnit * selectedSlot.quantity;
+    selectedCostSpan.textContent = `$${totalCost.toFixed(2)}`;
+    // Store this on playgroupSelections or a similar object for checkout
+    playgroupSelections.calculatedCost = { totalActualCost: totalCost }; // Use existing structure
+}
+
+   function calculateOtherCost(option) {
+    let cost = 0;
+    let quantity = 1; // Usually 1 for these items
+
+    if (selectedService === 'openplay') {
+        if (option === 'punchcard') cost = 120;
+        else if (option === 'membership') cost = 99; // Corrected from your example
+        else return; // Not a bulk item
+    } else {
+        return; // Not for birthday here
+    }
+
+    if (cost > 0) {
+        // Update state to reflect this single item purchase
+        selectedSlot = { // Re-purpose selectedSlot or use a new state variable
+            serviceType: selectedService,
+            openPlayOption: option,
+            quantity: quantity,
+            costPerUnit: cost,
+            start: null, // No specific start/end for purchase
+            end: null
+        };
+        updateTotalCostDisplay(); // Update display
+        if (costSummaryDiv) costSummaryDiv.classList.remove('hidden');
+        if (selectedSlotInfo) selectedSlotInfo.innerHTML = `<p><strong>Selected:</strong> Open Play ${option.charAt(0).toUpperCase() + option.slice(1)}</p>`;
+    } else {
+        selectedSlot = null;
+        if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
+    }
+    checkBookingLoginStatus(); // Update checkout button
    }
 
    async function initiateCheckout() {
@@ -959,34 +1047,55 @@
       // --- Gather Data based on State ---
       let checkoutData = { serviceType: selectedService };
 
-      if (selectedService === 'playgroup') {
-          checkoutData = {
-              ...checkoutData,
-              paymentType: playgroupSelections.paymentType, // 'full' or 'installment'
-              semesterDetails: playgroupSelections.semester,
-              daysPerWeekBitmask: playgroupSelections.daysBitmask,
-              scheduleIds: playgroupSelections.scheduleIds,
-          };
-      } else if (selectedService === 'openplay') {
-          const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
-          checkoutData.openPlayOption = openPlayOption;
-          if (openPlayOption === 'dropin') {
-              if (!selectedSlot) { /* handle error - shouldn't happen if button logic is right */ }
-              checkoutData.selectedSlot = selectedSlot;
-          }
-      } else if (selectedService === 'birthday') {
-          const partyDuration = 2; // Assuming fixed duration for now
-           if (!selectedSlot) { /* handle error */ }
-          checkoutData.selectedSlot = selectedSlot;
-          checkoutData.partyDuration = partyDuration;
-      } else {
-          if (messagesDiv) messagesDiv.textContent = "Invalid service type selected.";
-          isCheckoutInProgress = false;
-          if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
-          return;
-      }
+if (selectedService === 'playgroup') {
+    checkoutData = {
+        ...checkoutData,
+        paymentType: playgroupSelections.paymentType,
+        semesterDetails: playgroupSelections.semester,
+        daysPerWeekBitmask: playgroupSelections.daysBitmask,
+        scheduleIds: playgroupSelections.scheduleIds,
+        // Playgroup quantity: If you allow multiple children for semester,
+        // you'd need a quantity input for playgroup too.
+        // For now, assume quantity 1 for playgroup is handled by existing logic.
+        // If adding, backend /create-checkout-session needs to handle playgroup quantity.
+        quantity: 1 // Default for playgroup, or get from a playgroup-specific quantity input
+    };
+} else if (selectedService === 'openplay') {
+        const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
+        checkoutData.openPlayOption = openPlayOption;
 
+        if (openPlayOption === 'dropin') {
+            if (!selectedSlot || !selectedSlot.start || !selectedSlot.quantity) { // Ensure selectedSlot has quantity
+                if (messagesDiv) messagesDiv.textContent = "Please select a drop-in slot and quantity.";
+                isCheckoutInProgress = false;
+                if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+                return;
+            }
+            // Pass the selectedSlot object which includes start, end, AND quantity
+            checkoutData.selectedSlot = selectedSlot; // Backend will use selectedSlot.quantity
+        }
+        // For 'punchcard' or 'membership', selectedSlot is not relevant for quantity in the same way.
+        // Backend assumes quantity 1 for these purchase line items.
+        // If you wanted to buy, e.g., 2 punchcards, that would be a different UI/backend logic.
 
+    } else if (selectedService === 'birthday') {
+        const partyDuration = 2; // Assuming fixed
+        if (!selectedSlot || !selectedSlot.start || !selectedSlot.quantity) { // Ensure selectedSlot has quantity
+            if (messagesDiv) messagesDiv.textContent = "Please select a birthday slot.";
+            isCheckoutInProgress = false;
+            if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+            return;
+        }
+        // Pass the selectedSlot object which includes start, end, AND quantity
+        checkoutData.selectedSlot = selectedSlot; // Backend will use selectedSlot.quantity
+        checkoutData.partyDuration = partyDuration;
+
+    } else {
+        if (messagesDiv) messagesDiv.textContent = "Invalid service type selected.";
+        isCheckoutInProgress = false;
+        if (checkoutButton) { checkoutButton.disabled = false; checkoutButton.textContent = 'Proceed to Checkout'; }
+        return;
+    }
 
       try {
           // --- Call the unified backend endpoint ---
@@ -1083,11 +1192,12 @@ if (monthlyCostSpan) monthlyCostSpan.textContent = '$TBD';
    }
 
     function resetOtherBooking() {
-        selectedSlot = null;
-        playgroupSelections.calculatedCost = null; // Use the same cost object
-
+        selectedSlot = null; // Clear the selected item
+        playgroupSelections.calculatedCost = null;
         if (costSummaryDiv) costSummaryDiv.classList.add('hidden');
-        if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
+        if (selectedCostSpan) selectedCostSpan.textContent = '$0.00';
+    if (selectedSlotInfo) selectedSlotInfo.innerHTML = 'N/A';
+    if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
         if (messagesDiv) messagesDiv.textContent = '';
         if (availableSlotsContainer) {
             availableSlotsContainer.querySelectorAll('.slot').forEach(el => el.classList.remove('selected'));

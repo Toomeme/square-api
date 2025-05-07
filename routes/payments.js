@@ -188,6 +188,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
 
              let amountInCents = 0;
              let productName = 'Open Play';
+             const quantity = (openPlayOption === 'dropin' && selectedSlot && selectedSlot.quantity) ? parseInt(selectedSlot.quantity, 10) : 1;
              switch (openPlayOption) {
                  case 'dropin':
                      if (!selectedSlot) return res.status(400).json({ message: "Selected slot required for drop-in." });
@@ -196,6 +197,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
                      metadata.bookingType = 'openplay_dropin';
                      metadata.slotStart = selectedSlot.start;
                      metadata.slotEnd = selectedSlot.end;
+                     metadata.originalItemDetails = JSON.stringify(selectedSlot);
                      break;
                  case 'punchcard':
                      amountInCents = 120 * 100; // $120
@@ -214,7 +216,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
              line_items.push({
                  price_data: {
                      currency: 'usd', product_data: { name: productName }, unit_amount: amountInCents,
-                 }, quantity: 1,
+                 }, quantity: quantity,
              });
              metadata.calculatedAmount = amountInCents;
 
