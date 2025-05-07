@@ -690,7 +690,7 @@ router.get('/available-slots-range', async (req, res) => {
                 const zonedEndTime = toZonedTime(endString, businessTimeZone);
                 const endTimeUTC = toDate(zonedEndTime);
 
-                if (isBefore(startTimeUTC, today)) continue; // Skip past slots
+                if (isBefore(endTimeUTC, today)) continue; // Skip past slots
 
                 const existingBookingsCount = await Booking.countDocuments({ /* ... */ });
 
