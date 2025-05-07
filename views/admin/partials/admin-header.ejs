@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><%= title %> - Admin</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f7f6; }
+        .admin-nav { background-color: #333; padding: 10px 20px; color: white; display: flex; justify-content: space-between; align-items: center; }
+        .admin-nav a { color: white; text-decoration: none; margin-left: 15px; }
+        .admin-container { padding: 20px; }
+        .error { color: red; background-color: #ffe0e0; padding: 10px; border: 1px solid red; margin-bottom:15px;}
+        h1, h2 { color: #333; }
+    </style>
+</head>
+<body>
+    <div class="admin-nav">
+        <div><a href="/admin/calendar">Bookings Calendar</a></div>
+        <div>
+            <% if (locals.adminUser && locals.adminUser.username) { %>
+                <span>Welcome, <%= locals.adminUser.username %>!</span>
+                <a href="/admin/logout">Logout</a>
+            <% } %>
+        </div>
+    </div>
+    <div class="admin-container">
+        <h1><%= title %></h1>
+        <hr>

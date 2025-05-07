@@ -1,12 +1,16 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const session = require('express-session');
+const MongoStore = require('connect-mongo');
+const path = require('path');
 const connectDB = require('./config/db');
 const bookingRoutes = require('./routes/bookings');
 const paymentRoutes = require('./routes/payments');
-const userRoutes = require('./routes/users');
+const publicUserRoutes = require('./routes/users'); // Renamed for clarity
 const pricingRoutes = require('./routes/pricing');
 const classScheduleRoutes = require('./routes/classSchedules');
+const adminRoutes = require('./routes/adminRoutes'); // Combined admin routes
 //const adminApiRoutes = require('./routes/bookings');
 
 const cron = require('node-cron');
@@ -26,15 +30,41 @@ app.use(cors());
 app.use('/api/bookings/webhook', express.raw({ type: 'application/json' }), bookingRoutes);
 app.use(express.json()); // Replace bodyParser.json()
 app.use(express.urlencoded({ extended: true }));
+// --- Session Middleware (Configure BEFORE routes that use it) ---
+if (!process.env.SESSION_SECRET) {
+    console.error("FATAL ERROR: SESSION_SECRET environment variable is not set.");
+    process.exit(1);
+}
+app.use(session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI, collectionName: 'admin_sessions' }), // Use distinct collection
+    cookie: {
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        maxAge: 1000 * 60 * 60 * 8, // 8 hours
+        // sameSite: 'lax' // Good for security
+    }
+}));
+
+// --- Templating Engine Setup (EJS) ---
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views')); // 'views' folder in root
+
 
 // Routes
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/payments', paymentRoutes);
-app.use('/api/users', userRoutes); // Add user routes
-app.use('/api/pricing', pricingRoutes);         // <-- Use pricing routes
+app.use('/api/users', publicUserRoutes); // For Squarespace user registration/login
+app.use('/api/pricing', pricingRoutes);
 app.use('/api/class-schedules', classScheduleRoutes);
-//app.use('/api/admin', adminApiRoutes);
-
+// --- Admin Routes (View and API combined, prefix with /admin) ---
+app.use('/admin', adminRoutes); // This handles /admin/login, /admin/calendar, /admin/api/calendar-bookings etc.
+// --- Basic Root/Error Handling ---
+app.get('/', (req, res) => { res.send('API Running. Admin panel at /admin/login'); });
+// 404 for other /api paths
+app.use('/api/*', (req, res) => res.status(404).json({ message: 'API endpoint not found.' }));
 // Basic Error Handling
 app.use((err, req, res, next) => {
     console.error("Global Error Handler:", err.stack);

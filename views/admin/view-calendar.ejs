@@ -1,0 +1,50 @@
+<%- include('partials/admin-header', { title: title }) %>
+
+<style>
+    #admin-calendar-container { max-width: 1100px; margin: 20px auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    .fc-event-popover { z-index: 1000 !important; }
+    .fc-event-main-frame table { font-size: 0.9em; }
+    .fc-event-main-frame table td:first-child { font-weight: bold; padding-right: 10px; }
+</style>
+
+<div id="admin-calendar-container">
+    <div id="admin-calendar-loading" style="text-align: center; padding: 20px; font-style: italic;">Loading calendar...</div>
+    <div id="admin-calendar"></div>
+</div>
+
+<script src='https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js'></script>
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        const calendarEl = document.getElementById('admin-calendar');
+        const loadingEl = document.getElementById('admin-calendar-loading');
+        if (!calendarEl || !loadingEl) { console.error("Calendar elements not found."); return; }
+
+        const calendar = new FullCalendar.Calendar(calendarEl, {
+            initialView: 'timeGridWeek', // Changed default view
+            headerToolbar: {
+                left: 'prev,next today',
+                center: 'title',
+                right: 'dayGridMonth,timeGridWeek,timeGridDay,listWeek'
+            },
+            events: function(fetchInfo, successCallback, failureCallback) {
+                loadingEl.style.display = 'block';
+                fetch(`/admin/api/calendar-bookings?start=${fetchInfo.startStr}&end=${fetchInfo.endStr}`) // Note: prepended /admin to API path
+                    .then(response => {
+                        if (!response.ok) throw new Error(`Error fetching: ${response.statusText}`);
+                        return response.json();
+                    })
+                    .then(events => successCallback(events))
+                    .catch(error => { failureCallback(error); alert(`Error loading calendar: ${error.message}`); })
+                    .finally(() => { loadingEl.style.display = 'none'; });
+            },
+            eventClick: function(info) {
+                const props = info.event.extendedProps;
+                alert(`Booking:\n${info.event.title}\nStart: ${info.event.start.toLocaleString()}\nEnd: ${info.event.end.toLocaleString()}\nUser: ${props.userEmail || 'N/A'}\nStatus: ${props.status}`);
+            },
+            loading: isLoading => { loadingEl.style.display = isLoading ? 'block' : 'none'; }
+        });
+        calendar.render();
+    });
+</script>
+
+<%- include('partials/admin-footer') %>
