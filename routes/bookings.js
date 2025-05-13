@@ -13,6 +13,8 @@ const { toDate, toZonedTime, format } = dateFnsTz; // Import necessary functions
 const { isBefore, isEqual } = require('date-fns');
 const nodemailer = require('nodemailer');
 
+const ROLLING_ENROLLMENT_WEEKS = 6; // Define duration
+
 // --- Configure Transport based on .env ---
 let transporter;
  if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -148,7 +150,104 @@ async function notifyAdminOfBookingFailure(userId, errorDetails) {
     return Promise.resolve();
 }
 // --- End Placeholder Notifications ---
+async function createRollingPlaygroupBookings(userId, enrollmentStartDateStr, enrollmentEndDateStr, scheduleIds, paymentRef, isSubscription) {
+    const refType = isSubscription ? 'Subscription' : 'PaymentIntent';
+    console.log(`SERVICE: Creating ROLLING Playgroup bookings for user ${userId}, ${refType}: ${paymentRef}`);
+    console.log(`SERVICE PARAMS: Start=${enrollmentStartDateStr}, End=${enrollmentEndDateStr}, Schedules=${JSON.stringify(scheduleIds)}`);
 
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+        const startDate = parseISO(enrollmentStartDateStr); // Parse YYYY-MM-DD strings
+        const endDate = parseISO(enrollmentEndDateStr);
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) throw new Error("Invalid start/end dates for booking creation.");
+
+        const userObjectId = new mongoose.Types.ObjectId(userId);
+        const holidays = await Holiday.find({ date: { $gte: startDate, $lte: endDate } }).session(session).lean();
+        const holidayDates = holidays.map(h => h.date);
+        const selectedSchedules = await ClassSchedule.find({ '_id': { $in: scheduleIds } }).session(session);
+        if (selectedSchedules.length === 0) throw new Error('No matching ClassSchedule documents found for provided IDs.');
+        // If scheduleIds might not match selected days of week, re-calculate bitmask or trust it from metadata.
+        // For simplicity, assume scheduleIds correctly reflect chosen days/times.
+
+        const scheduleMap = selectedSchedules.reduce((map, sched) => { if (!map[sched.dayOfWeek]) map[sched.dayOfWeek] = []; map[sched.dayOfWeek].push(sched); return map;}, {});
+        const user = await User.findById(userObjectId).session(session);
+        if (!user) throw new Error(`User ${userId} not found.`);
+
+        const createdBookings = [];
+        let currentDate = new Date(startDate);
+        const today = new Date(); // For skipping past slots
+
+        const isDaySelected = (day, mask) => ((1 << day) & mask) !== 0;
+        const isHoliday = (date, holidaysArr) => {
+            const checkDate = new Date(date); checkDate.setHours(0, 0, 0, 0);
+            return holidaysArr.some(h => { const hd = new Date(h); hd.setHours(0, 0, 0, 0); return isEqual(hd, checkDate); }); // Use isEqual for date comparison
+        };
+
+        let iterationCount = 0;
+        const datesInPeriod = eachDayOfInterval({ start: startDate, end: endDate });
+
+        for (const loopDate of datesInPeriod) {
+            iterationCount++;
+            const zonedCurrentDate = toZonedTime(loopDate, businessTimeZone);
+            const dayOfWeekInTZ = getDay(zonedCurrentDate); // date-fns getDay
+
+            // Check if there's ANY schedule selected for this dayOfWeek
+            if (scheduleMap[dayOfWeekInTZ] && scheduleMap[dayOfWeekInTZ].length > 0) {
+                if (!isHoliday(loopDate, holidayDates)) {
+                    for (const schedule of scheduleMap[dayOfWeekInTZ]) { // Loop through actual selected schedules for this day
+                        const dateStr = format(zonedCurrentDate, 'yyyy-MM-dd');
+                        const startString = `${dateStr}T${schedule.startTime}:00`;
+                        const endString = `${dateStr}T${schedule.endTime}:00`;
+                        const zonedStartTime = toZonedTime(startString, businessTimeZone);
+                        const startTimeUTC = toDate(zonedStartTime);
+                        const zonedEndTime = toZonedTime(endString, businessTimeZone);
+                        const endTimeUTC = toDate(zonedEndTime);
+
+                        if (isBefore(startOfDay(startTimeUTC), today)) { console.log(`SERVICE Rolling: Skipping past slot ${startTimeUTC.toISOString()}`); continue; }
+
+                        // Capacity Check
+                        const existingBookingsCount = await Booking.countDocuments({ serviceType: 'playgroup', start: startTimeUTC, status: { $in: ['paid', 'confirmed'] } }).session(session);
+                        if (existingBookingsCount >= schedule.capacity) {
+                            throw new Error(`Capacity full for playgroup slot on ${format(zonedStartTime, 'MMM d, yyyy HH:mm')}.`);
+                        }
+
+                        // Create Booking
+                        const newBooking = new Booking({
+                            user: userObjectId, serviceType: 'playgroup', cost: 0, // Cost is handled by overall payment/sub
+                            details: {
+                                scheduleId: schedule._id,
+                                enrollmentStartDate: enrollmentStartDateStr,
+                                enrollmentEndDate: enrollmentEndDateStr,
+                                ...(isSubscription ? { subscriptionId: paymentRef } : { paymentIntentId: paymentRef })
+                            },
+                            start: startTimeUTC, end: endTimeUTC, status: 'confirmed', // Confirmed by successful payment/sub setup
+                            ...(isSubscription ? {} : { paymentIntentId: paymentRef }) // Add PI only if not a sub
+                        });
+                        const savedBooking = await newBooking.save({ session: session });
+                        await User.findByIdAndUpdate(userObjectId, { $push: { classes: savedBooking._id } }).session(session);
+                        createdBookings.push(savedBooking);
+                        // GCal removal means no GCal calls here
+                    }
+                } else { console.log(`SERVICE Rolling: Skipping holiday ${format(loopDate, 'yyyy-MM-dd')}`); }
+            } // No else needed, just skip if no schedule for this day
+            // currentDate.setDate(currentDate.getDate() + 1); // Not needed with eachDayOfInterval
+        } // End loop
+
+        console.log(`SERVICE Rolling: Loop finished after ${iterationCount} date checks.`);
+        if (createdBookings.length === 0) console.warn("SERVICE Rolling: WARNING - No bookings created. Check dates, holidays, or schedule selection.");
+
+        await session.commitTransaction();
+        console.log(`SERVICE Rolling: Transaction committed. ${createdBookings.length} bookings created for ${refType} ${paymentRef}.`);
+        return createdBookings;
+    } catch (err) {
+        console.error(`SERVICE Rolling: Error creating playgroup bookings for ${refType} ${paymentRef}:`, err);
+        if (session.inTransaction()) await session.abortTransaction();
+        throw err;
+    } finally {
+        if (session && session.endSession) session.endSession();
+    }
+}
 
 // --- Helper Service Function for Creating Semester Bookings ---
 async function createSemesterBookings(userId, semesterStart, semesterEnd, scheduleIds, subscriptionId) {
@@ -539,6 +638,119 @@ router.get('/available-slots', async (req, res) => {
     } catch (err) {
         console.error("Error in /available-slots:", err);
         res.status(500).json({ message: 'Error fetching available slots' });
+    }
+});
+
+router.get('/rolling-slot-availability', authMiddleware, async (req, res) => {
+    const { scheduleId, checkStartDate: checkStartDateString } = req.query;
+    const today = startOfDay(new Date()); // Start of today for comparison
+
+    // --- Validation ---
+    if (!scheduleId || !mongoose.Types.ObjectId.isValid(scheduleId)) {
+        return res.status(400).json({ message: 'Valid scheduleId is required.' });
+    }
+    if (!checkStartDateString) {
+        return res.status(400).json({ message: 'checkStartDate (YYYY-MM-DD) is required.' });
+    }
+
+    let checkStartDate;
+    try {
+        checkStartDate = parseISO(checkStartDateString); // Parses YYYY-MM-DD into Date object (at UTC midnight)
+        if (isNaN(checkStartDate.getTime())) throw new Error();
+    } catch (e) {
+        return res.status(400).json({ message: 'Invalid checkStartDate format. Use YYYY-MM-DD.' });
+    }
+    // Optional: Ensure checkStartDate is not too far in the past or future
+    // if (isBefore(checkStartDate, addDays(today, -7)) || isBefore(addMonths(today, 6), checkStartDate)) {
+    //     return res.status(400).json({ message: 'Start date is out of acceptable range.' });
+    // }
+
+
+    console.log(`ROLLING AVAIL CHECK: Schedule ${scheduleId}, For 8 weeks starting from ${format(checkStartDate, 'yyyy-MM-dd')}`);
+
+    try {
+        // 1. Fetch Schedule Details
+        const schedule = await ClassSchedule.findById(scheduleId).lean();
+        if (!schedule) return res.status(404).json({ message: 'Class schedule not found.' });
+        const maxCapacity = schedule.capacity;
+
+        // 2. Calculate the 8-week period based on checkStartDate
+        const enrollmentStartDate = new Date(checkStartDate); // Use the provided start date
+        const enrollmentEndDate = addWeeks(enrollmentStartDate, ROLLING_ENROLLMENT_WEEKS);
+        enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1); // Inclusive end for 8 weeks
+        console.log(` > Period: ${format(enrollmentStartDate, 'yyyy-MM-dd')} to ${format(enrollmentEndDate, 'yyyy-MM-dd')}`);
+
+
+        // 3. Fetch Holidays in this specific 8-week range
+        const holidays = await Holiday.find({ date: { $gte: enrollmentStartDate, $lte: enrollmentEndDate } }).lean();
+        const holidayDates = holidays.map(h => h.date); // Array of Date objects
+        console.log(` > Found ${holidayDates.length} holidays in this 8-week period.`);
+
+        // 4. Iterate and Count (Focus on finding minimum remaining capacity in this 8-week block)
+        let minRemainingCapacity = maxCapacity;
+        let isEverFullInPeriod = false;
+        let checkedFutureDatesInPeriod = 0;
+        let firstAvailableDate = null; // To find the earliest bookable date in the 8-week window
+
+        const datesInPeriod = eachDayOfInterval({ start: enrollmentStartDate, end: enrollmentEndDate });
+
+        for (const currentDate of datesInPeriod) {
+            const zonedCurrentDate = toZonedTime(currentDate, businessTimeZone);
+            const dayOfWeekInTZ = getDay(zonedCurrentDate); // date-fns getDay: 0=Sun, 6=Sat
+
+            if (dayOfWeekInTZ === schedule.dayOfWeek && !isHoliday(currentDate, holidayDates)) {
+                // Calculate specific slot times for this date
+                const dateStr = format(zonedCurrentDate, 'yyyy-MM-dd');
+                const startString = `${dateStr}T${schedule.startTime}:00`;
+                const endString = `${dateStr}T${schedule.endTime}:00`;
+                const zonedStartTime = toZonedTime(startString, businessTimeZone);
+                const startTimeUTC = toDate(zonedStartTime);
+                 const zonedEndTime = toZonedTime(endString, businessTimeZone); // Not strictly needed for count if start is unique
+                 const endTimeUTC = toDate(zonedEndTime);
+
+                // Only consider dates/slots that are today or in the future
+                if (!isBefore(startOfDay(startTimeUTC), today)) { // Compare start of day
+                    checkedFutureDatesInPeriod++;
+                    if (!firstAvailableDate) {
+                        firstAvailableDate = new Date(startTimeUTC); // Capture the first valid future date
+                    }
+
+                    const count = await Booking.countDocuments({
+                        serviceType: schedule.serviceType, // Assuming playgroup
+                        start: startTimeUTC,
+                        status: { $in: ['paid', 'confirmed'] }
+                    });
+
+                    const remaining = maxCapacity - count;
+                    minRemainingCapacity = Math.min(minRemainingCapacity, remaining);
+                    // console.log(` > ${dateStr} ${schedule.startTime} - Count=${count}, Remaining=${remaining}, MinSoFar=${minRemainingCapacity}`);
+
+                    if (remaining <= 0) {
+                        isEverFullInPeriod = true;
+                        // Don't break here if you want to find the absolute minRemaining.
+                        // If just checking if *any* slot is full, you can break.
+                    }
+                }
+            }
+        } // end for loop over datesInPeriod
+
+        // 5. Return Result
+        const result = {
+            scheduleId: scheduleId,
+            maxCapacity: maxCapacity,
+            minRemainingCapacityInPeriod: isEverFullInPeriod ? 0 : Math.max(0, minRemainingCapacity), // Ensure non-negative
+            requestedStartDate: checkStartDateString,
+            periodCheckedStart: format(enrollmentStartDate, 'yyyy-MM-dd'),
+            periodCheckedEnd: format(enrollmentEndDate, 'yyyy-MM-dd'),
+            firstAvailableDateInPeriod: firstAvailableDate ? firstAvailableDate.toISOString() : null,
+            checkedFutureDatesInPeriod: checkedFutureDatesInPeriod
+        };
+        console.log(`ROLLING AVAIL RESULT for ${scheduleId} starting ${checkStartDateString}:`, result);
+        res.json(result);
+
+    } catch (error) {
+        console.error(`Error checking rolling availability for schedule ${scheduleId}:`, error);
+        res.status(500).json({ message: 'Error checking slot availability.' });
     }
 });
 

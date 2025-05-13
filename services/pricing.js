@@ -1,3 +1,7 @@
+const { isBefore, startOfDay, addWeeks, eachDayOfInterval, getDay } = require('date-fns');
+const { isHoliday } = require('./holidayUtils');
+const { isDaySelected } = require('./scheduleUtils');
+
 // services/pricing.js
 function calculatePlayGroupCost(numberOfDays, daysPerWeekBitmask, paymentType, semesterStartDate, semesterEndDate, holidays)
     {
@@ -122,10 +126,77 @@ function calculateBirthdayPartyCost(durationHours) {
         return { error: "Invalid birthday party duration." };
     }
 }
+function calculateRollingPlaygroupCost(numberOfDaysSelected, daysPerWeekBitmask, paymentType, enrollmentStartDate, durationWeeks, holidays) {
+   console.log(`ROLLING COST CALC: Start=${enrollmentStartDate.toISOString()}, Weeks=${durationWeeks}, DaysSelected=${numberOfDaysSelected}, Bitmask=${daysPerWeekBitmask}`);
+
+   // --- Determine Session Cost Tier ---
+   let sessionCost;
+   if (numberOfDaysSelected === 1) sessionCost = 50;
+   else if (numberOfDaysSelected === 2) sessionCost = 44;
+   else if (numberOfDaysSelected === 3) sessionCost = 40;
+   else if (numberOfDaysSelected >= 4) sessionCost = 38; // 4 or 5 days
+   else return { error: "Invalid number of days selected (1-5)." };
+
+   const registrationFee = (paymentType === 'full') ? 0 : 25;
+
+   // --- Calculate End Date ---
+   // addWeeks adds weeks, but the end date should be exclusive for the loop typically,
+   // or inclusive depending on how you count "8 weeks".
+   // Let's calculate end date as start + 8 weeks - 1 day for an inclusive 8-week period.
+   const enrollmentEndDate = addWeeks(enrollmentStartDate, durationWeeks);
+   enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1); // Inclusive end date
+   console.log(`ROLLING COST CALC: Calculated End Date (inclusive): ${enrollmentEndDate.toISOString()}`);
+
+
+   // --- Calculate Actual Sessions in the specific 8-week block ---
+   let actualSessions = 0;
+   const today = startOfDay(new Date()); // Start of today UTC
+
+   try {
+       // Get all dates within the interval
+       const intervalDates = eachDayOfInterval({
+           start: enrollmentStartDate,
+           end: enrollmentEndDate
+       });
+
+       for (const currentDate of intervalDates) {
+           const dayOfWeek = getDay(currentDate); // 0=Sun, 6=Sat
+
+           // Check if it's a selected day, NOT a holiday, AND NOT in the past
+           const isPastDate = isBefore(startOfDay(currentDate), today);
+
+           if (!isPastDate && isDaySelected(dayOfWeek, daysPerWeekBitmask) && !isHoliday(currentDate, holidays)) {
+               actualSessions++;
+           }
+       }
+   } catch (err) {
+        console.error("Error during date iteration in rolling cost calc:", err);
+        return { error: "Error calculating session dates." };
+   }
+
+   const totalActualCost = sessionCost * actualSessions + registrationFee;
+
+   console.log(`ROLLING COST CALC: Actual Sessions=${actualSessions}, Total Cost=${totalActualCost}`);
+
+   return {
+       sessionCost,
+       registrationFee,
+       totalActualCost, // Actual cost to be charged for this 8-week block
+       actualSessions, // Count for this 8-week block
+       startDate: enrollmentStartDate.toISOString().split('T')[0], // Return dates used
+       endDate: enrollmentEndDate.toISOString().split('T')[0],
+       durationWeeks,
+       numberOfDaysSelected,
+       daysPerWeekBitmask,
+       // Add calculated installment amount if needed here?
+       // installments: paymentType === 'installment' ? calculateInstallments(totalActualCost - registrationFee, 2) : null // Example: 2 installments
+   };
+}
 
 // Export the functions so they can be used in other files
 module.exports = {
     calculatePlayGroupCost,
     calculateOpenPlayCost,
     calculateBirthdayPartyCost,
+    calculateRollingPlaygroupCost
 };

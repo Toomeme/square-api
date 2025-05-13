@@ -74,6 +74,52 @@ router.post('/calculate-playgroup', async (req, res) => {
     }
 });
 
+router.post('/calculate-rolling-playgroup', async (req, res) => {
+    console.log("--- CALCULATE ROLLING PLAYGROUP COST HANDLER ---");
+    const { startDate: startDateString, daysPerWeekBitmask, paymentType } = req.body;
+    const durationWeeks = 6; // Define duration
+
+        // Basic Input Validation
+        if (!semesterStartDate || !semesterEndDate || daysPerWeekBitmask === undefined || !paymentType) {
+            return res.status(400).json({ message: 'Missing required fields for cost calculation.' });
+        }
+        if (typeof daysPerWeekBitmask !== 'number' || daysPerWeekBitmask <= 0) {
+            return res.status(400).json({ message: 'Invalid daysPerWeekBitmask.' });
+        }
+    // Validate date format
+    const enrollmentStartDate = new Date(startDateString + 'T00:00:00.000Z'); // Treat as UTC start day
+    if (isNaN(enrollmentStartDate.getTime())) return res.status(400).json({ message: 'Invalid start date format (YYYY-MM-DD required).' });
+
+    try {
+        // Calculate end date for holiday fetching
+        const enrollmentEndDate = addWeeks(enrollmentStartDate, durationWeeks);
+        enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1);
+
+        // Fetch holidays within the specific range
+        const holidays = await Holiday.find({ date: { $gte: enrollmentStartDate, $lte: enrollmentEndDate } }).lean();
+        const holidayDates = holidays.map(h => h.date);
+
+        let numberOfDaysSelected = 0; /* ... calculate from bitmask ... */
+
+        // Call the modified pricing function
+        const costDetails = pricing.calculateRollingPlaygroupCost(
+            numberOfDaysSelected,
+            daysPerWeekBitmask,
+            paymentType,
+            enrollmentStartDate, // Pass Date object
+            durationWeeks,
+            holidayDates         // Pass Date objects
+        );
+
+        if (costDetails.error) return res.status(400).json({ message: costDetails.error });
+        res.json(costDetails);
+
+    } catch (err) {
+        console.error('Error calculating playgroup cost:', err);
+        res.status(500).json({ message: 'Server error calculating cost' });
+    }
+});
+
 // Add other pricing calculation endpoints if needed (e.g., dynamic birthday costs)
 
 module.exports = router;
