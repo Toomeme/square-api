@@ -4,8 +4,7 @@ const express = require('express');
 const router = express.Router();
 const pricing = require('../services/pricing'); // Your existing pricing service
 const Holiday = require('../models/Holiday');
-const { authMiddleware } = require('../utils/auth'); // Protect if needed, though cost calc might be public
-
+const {addWeeks} = require('date-fns');
 // Endpoint to calculate Playgroup Semester Cost
 // POST /api/pricing/calculate-playgroup
 
