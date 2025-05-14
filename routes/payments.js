@@ -2,29 +2,31 @@
 const express = require('express');
 const router = express.Router();
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
-const { authMiddleware } = require('../utils/auth'); // Protect this route
+const { authMiddleware } = require('../utils/auth');
 const User = require('../models/User');
-const pricing = require('../services/pricing'); // May need pricing service for validation/lookup
+const pricing = require('../services/pricing'); // Your pricing service
 const Holiday = require('../models/Holiday');
+const { addWeeks, format } = require('date-fns-tz'); // For date manipulation
+const { parseISO } = require('date-fns');
+
+const ROLLING_ENROLLMENT_WEEKS = 6;
 
 router.post('/create-checkout-session', authMiddleware, async (req, res) => {
     console.log("--- CREATE UNIFIED CHECKOUT SESSION ---");
     const userId = req.user._id;
     const {
-        // Common fields
-        serviceType, // 'playgroup', 'openplay', 'birthday'
-        // Playgroup specific
+        serviceType,
+        // Playgroup specific (for ROLLING enrollment)
+        startDate: playgroupStartDateString, // NEW: YYYY-MM-DD
+        daysPerWeekBitmask,
+        scheduleIds,
         paymentType, // 'full' or 'installment'
-        semesterDetails, // { start, end }
-        daysPerWeekBitmask, // For selecting price tier
-        scheduleIds, // Array of ClassSchedule._id strings
-        // Open Play / Birthday specific
-        selectedSlot, // { start, end } ISO strings for drop-in/birthday
-        openPlayOption, // 'dropin', 'punchcard', 'membership'
-        partyDuration, // e.g., 2 for birthday
+        // Open Play / Birthday specific (keep these)
+        selectedSlot, openPlayOption, partyDuration,
+        // itemsToBook // If you implemented a full cart for OpenPlay/Birthday
     } = req.body;
 
-    console.log("Request Body:", req.body); // Log incoming data
+    console.log("Request Body for Checkout:", req.body);
 
     try {
         // --- Find or Create Stripe Customer ---
@@ -59,127 +61,88 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         // --- Configure based on Service Type and Payment Type ---
 
         if (serviceType === 'playgroup') {
-            if (!semesterDetails || !daysPerWeekBitmask || !scheduleIds || !paymentType) {
-                 return res.status(400).json({ message: "Missing playgroup details for checkout." });
+            if (!playgroupStartDateString || daysPerWeekBitmask === undefined || !scheduleIds || !paymentType) {
+                 return res.status(400).json({ message: "Missing playgroup details for rolling enrollment." });
             }
-            metadata.bookingType = `playgroup_${paymentType}`; // e.g., playgroup_full, playgroup_installment
-            metadata.semesterStart = semesterDetails.start;
-            metadata.semesterEnd = semesterDetails.end;
-            metadata.scheduleIds = JSON.stringify(scheduleIds); // Store as JSON string
-            metadata.daysBitmask = daysPerWeekBitmask;
 
-            // Calculate numberOfDaysSelected from bitmask
+            const enrollmentStartDate = parseISO(playgroupStartDateString); // Parse to Date object (UTC midnight)
+            if (isNaN(enrollmentStartDate.getTime())) return res.status(400).json({ message: 'Invalid playgroup start date format.' });
+
+            // Calculate end date for this 6-week block
+            const enrollmentEndDate = addWeeks(enrollmentStartDate, ROLLING_ENROLLMENT_WEEKS);
+            enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1); // Inclusive end
+
+            // Store calculated dates and original selections in metadata
+            metadata.bookingType = `playgroup_rolling_${paymentType}`;
+            metadata.enrollmentStartDate = format(enrollmentStartDate, 'yyyy-MM-dd'); // Store as string
+            metadata.enrollmentEndDate = format(enrollmentEndDate, 'yyyy-MM-dd');   // Store as string
+            metadata.scheduleIds = JSON.stringify(scheduleIds);
+            metadata.daysPerWeekBitmask = daysPerWeekBitmask;
+            // numberOfDaysSelected can be recalculated or passed in metadata if needed by Stripe Description
             let numberOfDaysSelected = 0; let tempMask = daysPerWeekBitmask;
             while (tempMask > 0) { tempMask &= (tempMask - 1); numberOfDaysSelected++; }
-            metadata.daysPerWeek = numberOfDaysSelected; // Add for clarity in webhook
+            metadata.daysPerWeek = numberOfDaysSelected;
+
+
+            // --- Calculate Cost for the 6-week block (SERVER-SIDE) ---
+            const holidays = await Holiday.find({ date: { $gte: enrollmentStartDate, $lte: enrollmentEndDate } }).lean();
+            const holidayDates = holidays.map(h => h.date);
+            const costDetails = pricing.calculateRollingPlaygroupCost( // Call your new/modified pricing function
+                numberOfDaysSelected,
+                daysPerWeekBitmask,
+                paymentType, // Pass paymentType to handle reg fee in cost calculation
+                enrollmentStartDate,
+                ROLLING_ENROLLMENT_WEEKS,
+                holidayDates
+            );
+            if (costDetails.error) throw new Error(`Cost calculation failed: ${costDetails.error}`);
+            const totalCostForBlockInCents = Math.round(costDetails.totalActualCost * 100);
+            if (totalCostForBlockInCents <= 0 && paymentType === 'full') throw new Error("Calculated amount for full payment is zero or less.");
+            if (totalCostForBlockInCents < Math.round(costDetails.registrationFee * 100) && paymentType === 'installment') throw new Error("Calculated installment amount is less than registration fee.");
+
+            metadata.calculatedTotalAmount = totalCostForBlockInCents; // For webhook reference
+
 
             if (paymentType === 'installment') {
                 mode = 'subscription';
-                console.log(`Setting up $0 SUBSCRIPTION + Reg Fee`);
+                console.log(`Setting up ROLLING Playgroup $0 SUBSCRIPTION + Reg Fee`);
 
-                // --- Use the $0 Placeholder Price ID ---
-                const zeroSubPriceId = process.env.STRIPE_PRICE_ID_ZERO_INSTALLMENT_PLACEHOLDER; // e.g., price_zero_monthly
-                if (!zeroSubPriceId) throw new Error("Stripe $0 Price ID not configured.");
+                const zeroSubPriceId = process.env.STRIPE_PRICE_ID_ZERO_INSTALLMENT_PLACEHOLDER;
+                const regFeePriceId = process.env.STRIPE_PRICE_ID_REGISTRATION_FEE;
+                if (!zeroSubPriceId || !regFeePriceId) throw new Error("Stripe Price IDs for installment/reg fee not configured.");
 
-                // --- Use the Registration Fee Price ID ---
-                const regFeePriceId = process.env.STRIPE_PRICE_ID_REGISTRATION_FEE; // e.g., price_reg_fee
-                if (!regFeePriceId) throw new Error("Stripe Registration Fee Price ID not configured.");
-
-                console.log("WH: Calculating installment details for metadata...");
-                const holidays = await Holiday.find({ date: { $gte: new Date(semesterDetails.start), $lte: new Date(semesterDetails.end) } });
-                const holidayDates = holidays.map(h => new Date(h.date));
-                const costDetails = pricing.calculatePlayGroupCost(
-                    numberOfDaysSelected, daysPerWeekBitmask, 'full', // Use 'full' to get base class cost
-                    new Date(semesterDetails.start), new Date(semesterDetails.end), holidayDates
-                );
-                if (costDetails.error) throw new Error(`Cost calculation failed: ${costDetails.error}`);
-
-                const totalCostInCents = Math.round(costDetails.totalActualCost * 100);
-                // Determine Number of Installments (Example: 4) - Adjust as needed
-                let numInstallments = 4; // Or calculate based on semester duration
-                 if (numInstallments <= 0) numInstallments = 1;
-                const baseInstallmentAmount = Math.floor(totalCostInCents / numInstallments);
-                const remainder = totalCostInCents % numInstallments;
-                 // Calculate first installment amount if you want to handle remainder upfront
-                 const firstInstallmentAmount = baseInstallmentAmount + remainder;
-                 console.log(`Calc Results: Total=${totalCostInCents}, NumInst=${numInstallments}, BaseInst=${baseInstallmentAmount}, FirstInst=${firstInstallmentAmount}`);
+                // For installments, calculate number of installments (e.g., 2 for 6 weeks)
+                const numInstallments = 3; // Example: 2 installments for 6 weeks
+                const classCostOnly = totalCostForBlockInCents - Math.round(costDetails.registrationFee * 100); // Cost excluding reg fee
+                const baseInstallmentAmount = Math.floor(classCostOnly / numInstallments);
+                const remainder = classCostOnly % numInstallments;
+                const firstInstallmentAmount = baseInstallmentAmount + remainder; // First installment might be larger
+                metadata.numInstallments = numInstallments;
+                metadata.installmentAmount = baseInstallmentAmount; // Base for subsequent
+                metadata.firstInstallmentAmount = firstInstallmentAmount; // For webhook to potentially use for 1st InvoiceItem
 
                 line_items.push(
-                    {
-                        // Instead of price: zeroSubPriceId, use price_data for display clarity
-                        price_data: {
-                            currency: 'usd',
-                            product_data: {
-                                name: `Playgroup Semester Installment Plan (${numberOfDaysSelected} Day/Wk)`,
-                                description: `Covers ${numInstallments} monthly payments for the semester cost.`, // Add description
-                            },
-                            // STILL $0 for the recurring part itself
-                            unit_amount: 0,
-                            recurring: {
-                                interval: 'month', // Or your interval
-                            },
-                        },
-                        quantity: 1,
-                    },
-                    // Separate line item for the one-time Registration Fee
-                    {
-                        price: regFeePriceId, // Use the predefined Price for the fee
-                        quantity: 1
-                    }
-                    // Potential: Add the *first* installment amount as another one-time item?
-                    // This makes the initial charge clearer but complicates webhook logic slightly.
-                    // {
-                    //     price_data: {
-                    //         currency: 'usd',
-                    //         product_data: { name: "First Installment (of "+numInstallments+")" },
-                    //         unit_amount: firstInstallmentAmount, // First installment amount in cents
-                    //     },
-                    //     quantity: 1,
-                    // }
+                    { price: zeroSubPriceId, quantity: 1 },
+                    { price: regFeePriceId, quantity: 1 }
+                    // Optional: Could add the first 'class cost' installment here as a one-time item
+                    // { price_data: { currency: 'usd', product_data: { name: "First Playgroup Installment" }, unit_amount: firstInstallmentAmount }, quantity: 1 }
                 );
-                
-                // Metadata still needed for backend calculation
-                metadata.numInstallments = numInstallments;
-                metadata.installmentAmount = baseInstallmentAmount; // Store base amount
-                metadata.firstInstallmentAmount = firstInstallmentAmount; // Store first amount if different
-                metadata.totalSemesterCost = totalCostInCents; // Store total for reference
-                
-                subscription_data = {
-                    metadata: { appUserId: userId.toString(), daysPerWeek: numberOfDaysSelected }
-                    // Optional: Could set 'cancel_at_period_end' or specific 'cancel_at' date
-                    // based on numInstallments if you know the exact end date.
-                };
+                subscription_data = { metadata: { appUserId: userId.toString(), daysPerWeek: numberOfDaysSelected } };
 
-            } else {
-                // --- One-Time Payment Mode (Full Semester) ---
+            } else { // paymentType === 'full' for rolling playgroup
                 mode = 'payment';
-                console.log(`Setting up ONE-TIME payment for full semester (${numberOfDaysSelected} days/week)`);
-
-                // SERVER-SIDE COST CALCULATION (Essential for security)
-                const holidays = await Holiday.find({ date: { $gte: new Date(semesterDetails.start), $lte: new Date(semesterDetails.end) } });
-                const holidayDates = holidays.map(h => new Date(h.date));
-                const costDetails = pricing.calculatePlayGroupCost(
-                    numberOfDaysSelected, daysPerWeekBitmask, 'full', // Use 'full' type for calc
-                    new Date(semesterDetails.start), new Date(semesterDetails.end), holidayDates
-                );
-                if (costDetails.error) throw new Error(costDetails.error);
-                const amountInCents = Math.round(costDetails.totalActualCost * 100);
-
-                if (amountInCents <= 0) throw new Error("Calculated amount for full payment is zero or less.");
-
-                // Create line item using price_data for one-time charge
+                console.log(`Setting up ONE-TIME payment for ROLLING Playgroup`);
                 line_items.push({
                     price_data: {
                         currency: 'usd',
                         product_data: {
-                            name: `Playgroup Semester (Full) - ${numberOfDaysSelected} Day(s)/Wk`,
-                            description: `Semester: ${semesterDetails.start} to ${semesterDetails.end}`,
+                            name: `Playgroup Rolling Enrollment (6 Weeks - ${numberOfDaysSelected} Day/Wk)`,
+                            description: `Starts: ${format(enrollmentStartDate, 'yyyy-MM-dd')}, Ends: ${format(enrollmentEndDate, 'yyyy-MM-dd')}`,
                         },
-                        unit_amount: amountInCents, // Amount for the entire semester
+                        unit_amount: totalCostForBlockInCents,
                     },
                     quantity: 1,
                 });
-                 metadata.calculatedAmount = amountInCents; // Store for webhook reference/validation
             }
         } else if (serviceType === 'openplay') {
              if (!openPlayOption) return res.status(400).json({ message: "Missing Open Play option." });

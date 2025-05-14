@@ -264,7 +264,7 @@
                return;
            }
 
-           playgroupDaySelector.innerHTML = '<p>Select Desired Day(s)/Time(s) for the Semester:</p>';
+           playgroupDaySelector.innerHTML = '<p>Select Desired Day(s)/Time(s) for your 6-week block:</p>';
            const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
            schedules.sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.startTime.localeCompare(b.startTime));
@@ -292,8 +292,10 @@
                  checkBookingLoginStatus(); // Update main checkout button
             });
 
-            // *** Trigger async fetch for current availability for THIS slot ***
-            fetchAndDisplayCurrentCapacity(schedule._id, capacitySpanId);
+        // After rendering, if a start date is already selected, update capacities
+        if (playgroupSelections.startDate) {
+            updateAllPlaygroupCapacities();
+        }
         });
 
        } catch (error) {
@@ -302,7 +304,24 @@
        }
    }
 
+   async function updateAllPlaygroupCapacities() {
+    if (!playgroupSelections.startDate) {
+        console.log("No start date selected, skipping capacity updates.");
+        // Optionally reset all capacity spans to "(Select Start Date)"
+        document.querySelectorAll('.capacity-info').forEach(span => span.textContent = "(Select Start Date)");
+        return;
+    }
 
+    // Get all schedule items rendered on the page
+    const scheduleItems = playgroupDaySelector.querySelectorAll('.day-option');
+    scheduleItems.forEach(itemDiv => {
+        const scheduleId = itemDiv.dataset.scheduleId;
+        const capacitySpanId = `capacity-span-${scheduleId}`;
+        if (scheduleId && document.getElementById(capacitySpanId)) {
+            fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId, playgroupSelections.startDate); // Pass start date
+        }
+    });
+}
   // Add checks inside event listeners setup
   function setupEventListeners() {
       // Service Type Selection
@@ -319,6 +338,22 @@
             resetPlaygroupCost();
         });
       }
+
+      if (document.getElementById('pg-start-date')) { // Assuming you add id="pg-start-date"
+    const pgStartDateInput = document.getElementById('pg-start-date');
+    pgStartDateInput.addEventListener('change', (e) => {
+        const newStartDate = e.target.value;
+        if (newStartDate) {
+            playgroupSelections.startDate = newStartDate; // Store as YYYY-MM-DD string
+            console.log("Playgroup Start Date selected:", newStartDate);
+            // When start date changes, re-check availability for all listed schedules
+            updateAllPlaygroupCapacities();
+            updatePlaygroupPaymentDisplays(); // Update cost based on new start date
+            checkBookingLoginStatus();
+        }
+    });
+}
+
 
        // Playgroup Day Selection (Checkbox changes)
        if (playgroupDaySelector) {
@@ -428,26 +463,22 @@
   async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId) {
     const capacitySpan = document.getElementById(capacitySpanId);
     if (!capacitySpan) return;
+    if (!checkStartDate) { // If no start date is provided, don't fetch
+         capacitySpan.textContent = "(Select Start Date)"; return;
+    }
 
     capacitySpan.textContent = "(Checking...)"; // Update placeholder
 
-    // Get current semester dates (ensure playgroupSelections.semester is up-to-date)
-    const currentSemester = playgroupSelections.semester;
-    if (!currentSemester || !currentSemester.start || !currentSemester.end) {
-        console.warn("Semester dates not available for capacity check:", scheduleId);
-        capacitySpan.textContent = "(Info unavailable)";
-        return;
-    }
-
-    try {
-        const token = localStorage.getItem('authToken');
+    const token = localStorage.getItem('authToken');
         if (!token) { // Need auth if endpoint is protected
              capacitySpan.textContent = "(Login required)";
              return;
         }
 
-        const response = await fetch(
-            `${backendApiUrl}/api/bookings/semester-slot-availability?scheduleId=${scheduleId}&semesterStart=${currentSemester.start}&semesterEnd=${currentSemester.end}`,
+    try {
+
+ const response = await fetch(
+            `${backendApiUrl}/api/bookings/rolling-slot-availability?scheduleId=${scheduleId}&checkStartDate=${checkStartDate}`,
             {
                 headers: {
                     'Authorization': `Bearer ${token}`,
@@ -463,22 +494,22 @@
         }
 
         const availabilityData = await response.json();
+        console.log("Received availability for", scheduleId, availabilityData);
 
-        // Update the span content
-        if (availabilityData.minRemainingCapacity !== undefined) {
-            if (availabilityData.minRemainingCapacity <= 0) {
-                capacitySpan.textContent = `(Currently Full)`;
+        if (availabilityData.minRemainingCapacityInPeriod !== undefined) {
+            if (availabilityData.minRemainingCapacityInPeriod <= 0 && availabilityData.checkedFutureDatesInPeriod > 0) { // Check if there were future dates
+                capacitySpan.textContent = `(Full for this 6-week period)`;
                 capacitySpan.style.color = 'red';
-                // Optionally disable the checkbox if full?
-                const checkbox = document.getElementById(`schedule-${scheduleId}`);
-                // if (checkbox) checkbox.disabled = true;
-            } else {
-                capacitySpan.textContent = `(Available: ${availabilityData.minRemainingCapacity}/${availabilityData.maxCapacity})`;
-                capacitySpan.style.color = 'green'; // Or default color
+                // Optionally disable checkbox
+            } else if (availabilityData.checkedFutureDatesInPeriod === 0) {
+                capacitySpan.textContent = `(No upcoming in 6-week period)`;
+                capacitySpan.style.color = 'orange';
             }
-        } else {
-            capacitySpan.textContent = "(Info unavailable)";
-        }
+             else {
+                capacitySpan.textContent = `(Min. Available: ${availabilityData.minRemainingCapacityInPeriod}/${availabilityData.maxCapacity})`;
+                capacitySpan.style.color = 'green';
+            }
+        } else { capacitySpan.textContent = "(Info unavailable)"; }
 
     } catch (error) {
         console.error(`Error fetching capacity for ${scheduleId}:`, error);
@@ -495,28 +526,30 @@
       if (!paymentOptionsDiv || !fullPaymentSummaryBox || !installmentDetailsBox) return; // Ensure elements exist
 
       // Hide both initially if no days selected
-      if (playgroupSelections.daysBitmask === 0) {
-          paymentOptionsDiv.classList.add('hidden');
-          return;
-      }
-
+      if (!playgroupSelections.startDate || playgroupSelections.daysBitmask === 0) {
+        if (paymentOptionsDiv) paymentOptionsDiv.classList.add('hidden');
+        return; // Exit if not enough info
+    }
+    if (paymentOptionsDiv) paymentOptionsDiv.classList.remove('hidden');
       // Show the container
-      paymentOptionsDiv.classList.remove('hidden');
       fullPaymentSummaryBox.classList.add('hidden'); // Hide specific boxes until calculated
       installmentDetailsBox.classList.add('hidden');
 
       // --- Calculate Full Payment Cost (for display) ---
       let calculatedFullCost = null;
       try {
-          const response = await fetch(`${backendApiUrl}/api/pricing/calculate-playgroup`, {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                  semesterStartDate: playgroupSelections.semester.start,
-                  semesterEndDate: playgroupSelections.semester.end,
-                  daysPerWeekBitmask: playgroupSelections.daysBitmask,
-                  paymentType: 'full' // Always calculate 'full' for display here
-               })
-          });
+        const response = await fetch(`${backendApiUrl}/api/pricing/calculate-rolling-playgroup`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'ngrok-skip-browser-warning': 'true' // If using ngrok
+            },
+            body: JSON.stringify({
+                startDate: playgroupSelections.startDate, // YYYY-MM-DD string
+                daysPerWeekBitmask: playgroupSelections.daysBitmask,
+                paymentType: 'full' // Always calculate 'full' cost for this section
+            })
+        });
           if (!response.ok) throw new Error('Failed to calculate cost');
           calculatedFullCost = await response.json();
 
@@ -1467,7 +1500,8 @@ if (monthlyCostSpan) monthlyCostSpan.textContent = '$TBD';
                  localStorage.removeItem('authToken');
                  loadingProfile.textContent = '';
                  profileError.textContent = 'Your session has expired. Please log in again.';
-                 // window.location.href = '/login';
+                 handleLogout();
+                 window.location.href = '/login';
                  return;
             }
 
