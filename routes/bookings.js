@@ -48,7 +48,16 @@ let transporter;
     };
 }
 
+const isHoliday = (dateToCheck, holidaysArray) => {
+    // Ensure dateToCheck is a Date object and normalized to start of day for comparison
+    const checkDate = startOfDay(new Date(dateToCheck)); // Use startOfDay for robust comparison
 
+    return holidaysArray.some(holidayDate => {
+        // Ensure holidayDate from the array is also a Date object and normalized
+        const hd = startOfDay(new Date(holidayDate));
+        return isEqual(hd, checkDate); // Use date-fns isEqual for reliable date comparison
+    });
+};
 // --- Email Sending Function ---
 const sendAdminBookingNotification = async (bookingDetails) => {
     if (!transporter || !process.env.ADMIN_EMAIL_RECIPIENT) {
@@ -179,10 +188,7 @@ async function createRollingPlaygroupBookings(userId, enrollmentStartDateStr, en
         const today = new Date(); // For skipping past slots
 
         const isDaySelected = (day, mask) => ((1 << day) & mask) !== 0;
-        const isHoliday = (date, holidaysArr) => {
-            const checkDate = new Date(date); checkDate.setHours(0, 0, 0, 0);
-            return holidaysArr.some(h => { const hd = new Date(h); hd.setHours(0, 0, 0, 0); return isEqual(hd, checkDate); }); // Use isEqual for date comparison
-        };
+
 
         let iterationCount = 0;
         const datesInPeriod = eachDayOfInterval({ start: startDate, end: endDate });
@@ -386,7 +392,7 @@ async function createSemesterBookingsOneTime(userId, semesterStart, semesterEnd,
         let currentDate = new Date(startDate);
         const today = new Date();
         const isDaySelected = (day, mask) => ((1 << day) & mask) !== 0;
-        const isHoliday = (date, holidaysArr) => { const cd = new Date(date); cd.setHours(0, 0, 0, 0); return holidaysArr.some(h => { const hd = new Date(h); hd.setHours(0, 0, 0, 0); return isEqual(hd, cd); }); };
+
 
         let iterationCount = 0; // Add iteration counter
 
@@ -798,7 +804,6 @@ router.get('/semester-slot-availability', authMiddleware, async (req, res) => {
         const endDate = new Date(semesterEnd);
         const holidays = await Holiday.find({ date: { $gte: startDate, $lte: endDate } }).lean();
         const holidayDates = holidays.map(h => h.date);
-        const isHoliday = (date, holidaysArr) => { /* ... your UTC comparison logic ... */ };
 
         // 3. Iterate and Count (Focus on finding minimum remaining capacity)
         let minRemainingCapacity = maxCapacity; // Start assuming full availability
