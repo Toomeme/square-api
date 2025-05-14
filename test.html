@@ -480,7 +480,7 @@
        }
   }
 
-  async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId) {
+  async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId,checkStartDate) {
     const capacitySpan = document.getElementById(capacitySpanId);
     if (!capacitySpan) return;
     if (!checkStartDate) { // If no start date is provided, don't fetch

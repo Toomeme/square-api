@@ -9,7 +9,7 @@ const Holiday = require('../models/Holiday');
 const { authMiddleware } = require('../utils/auth');
 const mongoose = require('mongoose');
 const dateFnsTz = require('date-fns-tz');
-const { toDate, toZonedTime, format } = dateFnsTz; // Import necessary functions
+const { toDate, toZonedTime, format, addWeeks, eachDayOfInterval, getDay, startOfDay } = dateFnsTz; // Import necessary functions
 const { isBefore, isEqual } = require('date-fns');
 const nodemailer = require('nodemailer');
 
