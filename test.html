@@ -1614,7 +1614,7 @@ const loadingDiv = document.getElementById('booking-success-loading');
         errorDiv.textContent = ''; // Clear previous errors
 
         try {
-            const response = await fetch(`/api/bookings/by-session/${sessionId}`, { // Relative or full URL
+            const response = await fetch(`${backendApiUrl}/api/bookings/by-session/${sessionId}`, { // Relative or full URL
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }

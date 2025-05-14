@@ -27,6 +27,7 @@ function calculatePlayGroupCost(numberOfDays, daysPerWeekBitmask, paymentType, s
     const endDate = new Date(semesterEndDate);
     let potentialSessions = 0;
     let currentDate = new Date(startDate);
+    const today = startOfDay(new Date());
 
     while (currentDate <= endDate) {
         const dayOfWeek = currentDate.getDay();
@@ -43,7 +44,9 @@ function calculatePlayGroupCost(numberOfDays, daysPerWeekBitmask, paymentType, s
 
     while (currentDate <= endDate) {
         const dayOfWeek = currentDate.getDay();
-        if (isDaySelected(dayOfWeek, daysPerWeekBitmask) && !isHoliday(currentDate, holidays)) {
+        const isPastDate = isBefore(startOfDay(currentDate), today);
+        if (isDaySelected(dayOfWeek, daysPerWeekBitmask) && !isHoliday(currentDate, holidays) &&
+        !isPastDate) {
             actualSessions++;
         }
         currentDate.setDate(currentDate.getDate() + 1);
