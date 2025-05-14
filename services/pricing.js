@@ -1,6 +1,4 @@
 const { isBefore, startOfDay, addWeeks, eachDayOfInterval, getDay } = require('date-fns');
-const { isHoliday } = require('./holidayUtils');
-const { isDaySelected } = require('./scheduleUtils');
 
 // services/pricing.js
 function calculateRollingPlaygroupCost(numberOfDaysSelected, daysPerWeekBitmask, paymentType, holidays, enrollmentStartDate, durationWeeks,)
