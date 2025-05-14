@@ -6,8 +6,8 @@ const { authMiddleware } = require('../utils/auth');
 const User = require('../models/User');
 const pricing = require('../services/pricing'); // Your pricing service
 const Holiday = require('../models/Holiday');
-const { addWeeks, format } = require('date-fns-tz'); // For date manipulation
-const { parseISO } = require('date-fns');
+const { format } = require('date-fns-tz'); // For date manipulation
+const { addWeeks,parseISO } = require('date-fns');
 
 router.post('/create-checkout-session', authMiddleware, async (req, res) => {
     console.log("--- CREATE UNIFIED CHECKOUT SESSION ---");
