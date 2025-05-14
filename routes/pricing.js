@@ -15,7 +15,7 @@ router.post('/calculate-rolling-playgroup', async (req, res) => {
     const { startDate: startDateString, daysPerWeekBitmask, paymentType, durationWeeks } = req.body;
 
         // Basic Input Validation
-        if (!startDate || daysPerWeekBitmask === undefined || !paymentType || !durationWeeks) {
+        if (!startDateString || daysPerWeekBitmask === undefined || !paymentType || !durationWeeks) {
             return res.status(400).json({ message: 'Missing required fields for cost calculation.' });
         }
         if (typeof daysPerWeekBitmask !== 'number' || daysPerWeekBitmask <= 0) {
