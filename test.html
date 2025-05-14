@@ -496,9 +496,9 @@
         }
 
     try {
-
+        console.log("FRONTEND: Value of checkStartDate being sent:", checkStartDate);
  const response = await fetch(
-            `${backendApiUrl}/api/bookings/rolling-slot-availability?scheduleId=${scheduleId}&checkStartDate=${checkStartDate}`,
+            `${backendApiUrl}/api/bookings/rolling-slot-availability?scheduleId=${scheduleId}&checkStartDate=${checkStartDate}&durationWeeks=${playgroupSelections.durationWeeks}`,
             {
                 headers: {
                     'Authorization': `Bearer ${token}`,

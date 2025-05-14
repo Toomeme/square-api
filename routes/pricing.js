@@ -109,9 +109,9 @@ router.post('/calculate-rolling-playgroup', async (req, res) => {
             numberOfDaysSelected,
             daysPerWeekBitmask,
             paymentType,
-            enrollmentStartDate, // Pass Date object
-            parsedDuration,
-            holidayDates         // Pass Date objects
+            holidayDates,         // Corrected order
+            enrollmentStartDate,  // Corrected order
+            parsedDuration              // Pass Date objects
         );
 
         if (costDetails.error) return res.status(400).json({ message: costDetails.error });
