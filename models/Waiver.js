@@ -19,7 +19,11 @@ const waiverSignatureSchema = new Schema({
         required: true,
         default: false,
     },
-    waiverVersion: { // In case your waiver text changes over time
+    userChildren: { 
+        type: String,
+        trim: true,
+    },
+    waiverVersion: {
         type: String,
         default: '1.0', // Or a date like '2024-07-16'
     },

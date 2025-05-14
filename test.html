@@ -4,13 +4,99 @@
         <h2>Liability Waiver & Agreement</h2>
         <div class="waiver-text-container">
             <!-- PASTE YOUR FULL WAIVER TEXT HERE -->
-            <p>This is a sample waiver. Please read carefully...</p>
-            <p><strong>Participant Agreement, Release and Assumption of Risk</strong></p>
-            <p>In consideration of the services of Little Friends Play Space LLC, their agents, owners, officers, volunteers, participants, employees, and all other persons or entities acting in any capacity on their behalf (hereinafter collectively referred to as "LFPS"), I hereby agree to release, indemnify, and discharge LFPS, on behalf of myself, my spouse, my children, my parents, my heirs, assigns, personal representative and estate as follows:</p>
-            <p>1. I acknowledge that my participation in LFPS activities entails known and unanticipated risks that could result in physical or emotional injury, paralysis, death, or damage to myself, to property, or to third parties...</p>
-            <!-- ... more paragraphs of your waiver ... -->
-            <p>By signing this document, I acknowledge that if anyone is hurt or property is damaged during my participation in this activity, I may be found by a court of law to have waived my right to maintain a lawsuit against LFPS on the basis of any claim from which I have released them herein.</p>
-            <p>I have had sufficient opportunity to read this entire document. I have read and understood it, and I agree to be bound by its terms.</p>
+            <h3>Assumption of Risk, Waiver, and Release from Liability</h3>
+
+            <p>I, the undersigned, am an adult entrusted to care for the child(ren) named below. I have carefully reviewed the contents of this waiver and release and knowingly and intelligently enter into this agreement, recognizing and appreciating that I am giving up mine and my child's right to sue. I am legally authorized to sign on the child's/children's behalf. I desire to allow my child(ren) and/or the child(ren) entrusted to my care to use the facilities at Little Friends Play Space. This Assumption of Risk, Waiver, and Release of Liability covers all activities, equipment, supplies, and supervision at Little Friends Play Space. I understand that any individual that is not bound by this agreement has no right to enter the facilities or participate in any activities at Little Friends Play Space.</p>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_1" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol>
+                <li>
+                <strong>Risk Factors:</strong> I understand and acknowledge that the use of the facilities at Little Friends Play Space involves risks including, but not limited to: bodily injury, permanent disability, paralysis, and death. These risks may result from misuse of equipment, other patrons, or lack of supervision.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_2" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="2">
+                <li>
+                <strong>Assumption of Risk:</strong> I am choosing to use the facilities at my own and my child’s risk. I acknowledge full responsibility and hold Little Friends Play Space harmless from any related responsibility.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_3" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="3">
+                <li>
+                <strong>Acknowledgement of Policies and Procedures:</strong> I agree to all policies and rules of Little Friends Play Space and understand my access can be revoked for violations.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_4" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="4">
+                <li>
+                <strong>Release, Indemnify, and Defend:</strong> I release and indemnify Little Friends Play Space and its affiliates from any losses related to property damage, injury, or illness.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_5" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="5">
+                <li>
+                <strong>Prerequisite Skills:</strong> I confirm all children in my care have the ability to safely use the facilities and that I am solely responsible for their participation.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_6" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="6">
+                <li>
+                <strong>Waiver:</strong> I waive any protections that would invalidate this agreement and agree to arbitration in Connecticut if any claim arises.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_7" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="7">
+                <li>
+                <strong>Representatives:</strong> I bind myself, my child(ren), heirs, and legal representatives to this agreement.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_8" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <ol start="8">
+                <li>
+                <strong>First Aid:</strong> If emergency First Aid is rendered, I waive any claims that may arise and this agreement remains fully in effect.
+                </li>
+            </ol>
+
+            <div class="checkbox">
+                <label><input type="checkbox" name="understand_9" required> I have read and understand the above paragraph.</label>
+            </div>
+
+            <h4>Consent and Release on Behalf of Minor by Parent/Legal Guardian</h4>
+
+            <p>After reading the following paragraph, name any minor who is accompanying you to Little Friends Play Space on the line provided.</p>
+
+            <p>I am the parent or adult entrusted to care for the minor(s) named below. I have read and understand this Assumption of Risk, Waiver and Release from Liability and understand that it relates to surrendering valuable legal rights of the minor(s) and myself. I agree to be bound by all the terms of the Assumption of Risk, Waiver, and Release from Liability. I give my consent for participation at Little Friends Play Space.</p>
             <!-- END OF WAIVER TEXT -->
         </div>
 
@@ -20,9 +106,14 @@
                 <label for="waiver-agree-checkbox">I have read, understood, and agree to the terms of this waiver.</label>
             </div>
             <div class="waiver-form-group">
+            <label for="minor-names">Name(s) of Minor(s):</label>
+            <textarea name="minor-names" id="minor-names" rows="3" placeholder="Your Child(ren)'s Full Name(s)"></textarea>
+            </div>
+            <div class="waiver-form-group">
                 <label for="waiver-signature-name">Type Full Name (as E-Signature):</label>
                 <input type="text" id="waiver-signature-name" name="waiver-signature-name" placeholder="Your Full Name">
             </div>
+
             <button id="waiver-submit-button" disabled>Agree & Continue</button>
             <p id="waiver-error-message" style="color: red; display: none;"></p>
         </div>
@@ -125,6 +216,7 @@
     const closeButton = document.querySelector('.waiver-modal-close-button');
     const agreeCheckbox = document.getElementById('waiver-agree-checkbox');
     const signatureNameInput = document.getElementById('waiver-signature-name');
+    const childNameInput = document.getElementById('minor-names');
     const waiverSubmitButton = document.getElementById('waiver-submit-button');
     const waiverErrorMessage = document.getElementById('waiver-error-message');
 
@@ -138,6 +230,7 @@
             // Reset waiver form
             if (agreeCheckbox) agreeCheckbox.checked = false;
             if (signatureNameInput) signatureNameInput.value = '';
+            if (childNameInput) childNameInput.value = '';
             if (waiverSubmitButton) waiverSubmitButton.disabled = true;
             if (waiverErrorMessage) waiverErrorMessage.style.display = 'none';
         }
@@ -152,9 +245,10 @@
 
     // --- Function to Check Waiver Form Validity (for enabling submit) ---
     function checkWaiverFormValidity() {
-        if (agreeCheckbox && signatureNameInput && waiverSubmitButton) {
+        if (agreeCheckbox && signatureNameInput && childNameInput && waiverSubmitButton) {
             const nameTyped = signatureNameInput.value.trim().length > 3; // Basic name check
-            waiverSubmitButton.disabled = !(agreeCheckbox.checked && nameTyped);
+            const childTyped = childNameInput.value.trim().length > 3; // Basic name check
+            waiverSubmitButton.disabled = !(agreeCheckbox.checked && nameTyped && childTyped);
         }
     }
 
@@ -596,15 +690,19 @@
         signatureNameInput.addEventListener('input', checkWaiverFormValidity);
     }
 
+    if (childNameInput) {
+        childNameInput.addEventListener('input', checkWaiverFormValidity);
+    }
+
     if (waiverSubmitButton) {
             waiverSubmitButton.addEventListener('click', async function() { // Make it async
-                if (!agreeCheckbox || !signatureNameInput || !waiverErrorMessage) {
+                if (!agreeCheckbox || !signatureNameInput || !childNameInput || !waiverErrorMessage) {
                     console.error("Waiver form elements not found for submission.");
                     return;
                 }
 
-                if (!agreeCheckbox.checked || signatureNameInput.value.trim().length < 3) {
-                    waiverErrorMessage.textContent = 'Please check the agreement box and type your full name.';
+                if (!agreeCheckbox.checked || signatureNameInput.value.trim().length < 3 || childNameInput.value.trim().length < 3) {
+                    waiverErrorMessage.textContent = "Please check the agreement box and type your full name, as well as your child(ren)'s name(s).";
                     waiverErrorMessage.style.display = 'block';
                     return;
                 }
@@ -616,6 +714,7 @@
 
                 const waiverData = {
                     signedName: signatureNameInput.value.trim(),
+                    userChildren: childNameInput.value.trim(),
                     agreedToTerms: agreeCheckbox.checked,
                     waiverVersion: '1.0' // Or get this dynamically
                 };
