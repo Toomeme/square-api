@@ -90,13 +90,13 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
             // --- Calculate Cost for the 6-week block (SERVER-SIDE) ---
             const holidays = await Holiday.find({ date: { $gte: enrollmentStartDate, $lte: enrollmentEndDate } }).lean();
             const holidayDates = holidays.map(h => h.date);
-            const costDetails = pricing.calculateRollingPlaygroupCost( // Call your new/modified pricing function
+            const costDetails = pricing.calculateRollingPlaygroupCost(
                 numberOfDaysSelected,
                 daysPerWeekBitmask,
-                paymentType, // Pass paymentType to handle reg fee in cost calculation
-                enrollmentStartDate,
-                parsedDuration,
-                holidayDates
+                paymentType,
+                holidayDates,
+                enrollmentStartDate, // This is a Date object
+                parsedDuration       // This should be a number (e.g., 6 or 12)
             );
             if (costDetails.error) throw new Error(`Cost calculation failed: ${costDetails.error}`);
             const totalCostForBlockInCents = Math.round(costDetails.totalActualCost * 100);

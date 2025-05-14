@@ -225,7 +225,11 @@
     if (!selectedService || !authToken) return false;
 
     if (selectedService === 'playgroup') {
-        return playgroupSelections.semester && playgroupSelections.daysBitmask > 0;
+        const isValid = playgroupSelections.startDate &&
+                       playgroupSelections.durationWeeks &&
+                       playgroupSelections.daysBitmask > 0 &&
+                       playgroupSelections.scheduleIds && playgroupSelections.scheduleIds.length > 0;
+        return isValid;
     } else if (selectedService === 'openplay' || selectedService === 'birthday') {
         // Now checks if selectedSlot (which contains quantity and details) is set
         return !!selectedSlot && selectedSlot.quantity > 0;
@@ -564,62 +568,75 @@
     }
 }
 
-   // --- *** NEW/REVISED: Updates both payment display areas for Playgroup *** ---
-   async function updatePlaygroupPaymentDisplays() {
-      const paymentOptionsDiv = document.getElementById('playgroup-payment-options-display');
-      const fullPaymentSummaryBox = document.getElementById('playgroup-cost-summary');
-      const installmentDetailsBox = document.getElementById('installment-details');
+async function updatePlaygroupPaymentDisplays() { // Make this function async
+    const paymentOptionsDiv = document.getElementById('playgroup-payment-options-display');
+    const fullPaymentSummaryBox = document.getElementById('playgroup-cost-summary');
+    const installmentDetailsBox = document.getElementById('installment-details');
 
-      if (!paymentOptionsDiv || !fullPaymentSummaryBox || !installmentDetailsBox) return; // Ensure elements exist
+    if (!paymentOptionsDiv || !fullPaymentSummaryBox || !installmentDetailsBox) return;
 
-      // Hide both initially if no days selected
-      if (!playgroupSelections.startDate || playgroupSelections.daysBitmask === 0 || !playgroupSelections.durationWeeks) {
+    if (!playgroupSelections.startDate || playgroupSelections.daysBitmask === 0 || !playgroupSelections.durationWeeks) {
         if (paymentOptionsDiv) paymentOptionsDiv.classList.add('hidden');
-        return; // Exit if not enough info
+        // Clear the cost state if inputs are insufficient
+        playgroupSelections.calculatedCost = null;
+        populatePlaygroupFullCostUI(null); // Clear full cost UI
+        populatePlaygroupInstallmentUI();  // Clear/reset installment UI
+        return;
     }
-    if (paymentOptionsDiv) paymentOptionsDiv.classList.remove('hidden');
-      // Show the container
-      fullPaymentSummaryBox.classList.add('hidden'); // Hide specific boxes until calculated
-      installmentDetailsBox.classList.add('hidden');
 
-      // --- Calculate Full Payment Cost (for display) ---
-      let calculatedFullCost = null;
-      try {
+    if (paymentOptionsDiv) paymentOptionsDiv.classList.remove('hidden');
+    fullPaymentSummaryBox.classList.add('hidden');
+    installmentDetailsBox.classList.add('hidden');
+
+    // --- Calculate Full Payment Cost (for display) ---
+    let calculatedFullCostData = null; // Use a local variable for the fetched data
+    try {
+        console.log("[FE] updatePlaygroupPaymentDisplays: Fetching full cost...");
         const response = await fetch(`${backendApiUrl}/api/pricing/calculate-rolling-playgroup`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'ngrok-skip-browser-warning': 'true' // If using ngrok
+                'ngrok-skip-browser-warning': 'true'
             },
             body: JSON.stringify({
-                startDate: playgroupSelections.startDate, // YYYY-MM-DD string
+                startDate: playgroupSelections.startDate,
                 daysPerWeekBitmask: playgroupSelections.daysBitmask,
-                paymentType: 'full', // Always calculate 'full' cost for this section
-                durationWeeks: playgroupSelections.durationWeeks 
+                paymentType: 'full',
+                durationWeeks: playgroupSelections.durationWeeks
             })
         });
-          if (!response.ok) throw new Error('Failed to calculate cost');
-          calculatedFullCost = await response.json();
+        if (!response.ok) {
+            const errorData = await response.json();
+            throw new Error(errorData.message || 'Failed to calculate cost');
+        }
+        calculatedFullCostData = await response.json();
+        console.log("[FE] updatePlaygroupPaymentDisplays: Full cost fetched:", calculatedFullCostData);
 
-          // Display Full Payment Details
-          populatePlaygroupFullCostUI(calculatedFullCost); // Use helper
-          fullPaymentSummaryBox.classList.remove('hidden');
+        // *** Store the fetched cost details ***
+        playgroupSelections.calculatedCost = calculatedFullCostData;
 
-      } catch (error) {
-          console.error('Error calculating playgroup cost for display:', error);
-          if (messagesDiv) messagesDiv.textContent = `Error calculating cost: ${error.message}`;
-          // Hide the full payment box on error
-          fullPaymentSummaryBox.classList.add('hidden');
-      }
+        // Display Full Payment Details
+        populatePlaygroupFullCostUI(calculatedFullCostData);
+        fullPaymentSummaryBox.classList.remove('hidden');
 
-      // --- Display Installment Info ---
-      populatePlaygroupInstallmentUI(); // Use helper
-      installmentDetailsBox.classList.remove('hidden');
+        // *** NOW call populatePlaygroupInstallmentUI AFTER cost is fetched and stored ***
+        populatePlaygroupInstallmentUI();
+        installmentDetailsBox.classList.remove('hidden');
 
-      // Update overall checkout button state
-      checkBookingLoginStatus();
-  }
 
+    } catch (error) {
+        console.error('[FE] Error calculating playgroup cost for display:', error);
+        if (messagesDiv) messagesDiv.textContent = `Error calculating cost: ${error.message}`;
+        playgroupSelections.calculatedCost = null; // Reset on error
+        populatePlaygroupFullCostUI(null); // Clear UI
+        populatePlaygroupInstallmentUI();  // Clear UI
+        fullPaymentSummaryBox.classList.add('hidden');
+        installmentDetailsBox.classList.add('hidden');
+    }
+
+    // Update overall checkout button state
+    checkBookingLoginStatus();
+}
   function highlightSlotsForDate(dateStrToHighlight) { // dateStr is "YYYY-MM-DD"
        if (!availableSlotsContainer) return;
        availableSlotsContainer.querySelectorAll('.slot').forEach(slotDiv => {
@@ -1325,59 +1342,58 @@ if (monthlyCostSpan) monthlyCostSpan.textContent = '$TBD';
    // --- Helper to populate the Installment Plan UI ---
 // --- Helper to populate the Installment Plan UI ---
 function populatePlaygroupInstallmentUI() {
-    const installmentDetailsBox = document.getElementById('installment-details'); // The main div for installment info
+    const installmentDetailsBox = document.getElementById('installment-details');
     const monthlyCostSpan = document.getElementById('installment-monthly-cost');
-    const installmentMessageSpan = document.getElementById('installment-plan-message'); // Optional: Add a span for # of installments
+    const installmentMessageSpan = document.getElementById('installment-plan-message');
 
     if (!installmentDetailsBox || !monthlyCostSpan) {
-        console.warn("Installment UI elements not found.");
+        console.warn("[FE] Installment UI elements not found.");
         return;
     }
 
-    // Get the selected duration and the calculated full cost (which is the class cost before reg fee)
-    const selectedDurationWeeks = playgroupSelections.durationWeeks; // Should be 6 or 12
-    const fullClassCostDetails = playgroupSelections.calculatedCost; // Cost from 'full' calculation
+    const selectedDurationWeeks = playgroupSelections.durationWeeks;
+    const fullClassCostDetails = playgroupSelections.calculatedCost; // This should now be up-to-date
+
+    console.log("[FE] populatePlaygroupInstallmentUI: Duration=", selectedDurationWeeks, "CalculatedCost=", fullClassCostDetails);
 
     if (!selectedDurationWeeks || !fullClassCostDetails || fullClassCostDetails.error || fullClassCostDetails.totalActualCost <= 0) {
         monthlyCostSpan.textContent = '$TBD (Select days & duration)';
         if (installmentMessageSpan) installmentMessageSpan.textContent = '';
-        installmentDetailsBox.classList.add('hidden'); // Hide if not enough info
+        // installmentDetailsBox.classList.add('hidden'); // Keep it visible but with TBD
         return;
     }
 
-    installmentDetailsBox.classList.remove('hidden'); // Show the box
+    // installmentDetailsBox.classList.remove('hidden'); // Already handled by caller
 
-    // --- Determine Installment Structure based on Duration ---
-    const registrationFee = 25; // Assuming $25 for installments
-    const totalClassCost = fullClassCostDetails.totalActualCost; // This is the cost of classes *without* the reg fee yet.
+    const registrationFee = 25;
+    const totalClassCost = fullClassCostDetails.totalActualCost; // This is cost of classes (reg fee is separate for installments)
 
     let numInstallments = 0;
     let descriptionOfInstallments = "";
 
-    if (selectedDurationWeeks === 12 || selectedDurationWeeks === 6) {
-        numInstallments = 3;
-        descriptionOfInstallments = `${numInstallments} monthly payments after the initial registration fee.`;
+    // For rolling, it's always 3 installments after reg fee, regardless of 6 or 12 weeks.
+    // The *amount* per installment will differ.
+    if (selectedDurationWeeks === 6 || selectedDurationWeeks === 12) { // Or any other supported duration
+        numInstallments = 3; // Fixed number of installments for rolling
+        descriptionOfInstallments = `${numInstallments} monthly payments for class costs, after the initial registration fee.`;
     } else {
         monthlyCostSpan.textContent = 'Unsupported duration for installments.';
         if (installmentMessageSpan) installmentMessageSpan.textContent = '';
         return;
     }
 
-    // Calculate approximate amount per class cost installment
     let amountPerClassInstallment = 0;
-    if (numInstallments > 0) {
-        amountPerClassInstallment = Math.ceil((totalClassCost / numInstallments) * 100) / 100; // Round up cents
+    if (numInstallments > 0 && totalClassCost > 0) {
+        amountPerClassInstallment = Math.ceil((totalClassCost / numInstallments) * 100) / 100;
     }
 
-    // Update the UI
     if (amountPerClassInstallment > 0) {
         monthlyCostSpan.innerHTML = `Approx. <strong>$${amountPerClassInstallment.toFixed(2)} per installment</strong> for class costs.<br>
                                      Plus a one-time $${registrationFee.toFixed(2)} registration fee.`;
-    } else if (totalClassCost > 0 && numInstallments === 0) { // E.g. if 6 weeks was designed as reg_fee + full_class_cost
+    } else if (totalClassCost > 0 && numInstallments === 0) {
          monthlyCostSpan.innerHTML = `Total class cost of <strong>$${totalClassCost.toFixed(2)}</strong>.<br>
                                      Plus a one-time $${registrationFee.toFixed(2)} registration fee.`;
-    }
-    else {
+    } else {
         monthlyCostSpan.textContent = '$TBD (Confirm selections)';
     }
 
@@ -1385,7 +1401,7 @@ function populatePlaygroupInstallmentUI() {
         installmentMessageSpan.textContent = descriptionOfInstallments;
     }
 
-    console.log(`Installment UI Updated: Duration=${selectedDurationWeeks}wks, Approx Monthly=$${amountPerClassInstallment}, NumInst=${numInstallments}, TotalClassCost=$${totalClassCost}`);
+    console.log(`[FE] Installment UI Updated: Duration=${selectedDurationWeeks}wks, Approx Monthly=$${amountPerClassInstallment}, NumInst=${numInstallments}, TotalClassCost=$${totalClassCost}`);
 }
 
    // Basic JWT parsing - consider a library for production robustness
