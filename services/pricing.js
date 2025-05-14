@@ -1,4 +1,4 @@
-const { isBefore, startOfDay, addWeeks, eachDayOfInterval, getDay } = require('date-fns');
+const { isBefore, startOfDay, addWeeks} = require('date-fns');
 
 // services/pricing.js
 function calculateRollingPlaygroupCost(numberOfDaysSelected, daysPerWeekBitmask, paymentType, holidays, enrollmentStartDate, durationWeeks,)
@@ -7,17 +7,17 @@ function calculateRollingPlaygroupCost(numberOfDaysSelected, daysPerWeekBitmask,
 
     if (durationWeeks === 6) {
         // Pricing for a 6-week block
-        if (numberOfDaysSelected === 1) sessionCost = 55; // Example: Higher per-session for shorter commitment
-        else if (numberOfDaysSelected === 2) sessionCost = 48;
-        else if (numberOfDaysSelected === 3) sessionCost = 44;
-        else if (numberOfDaysSelected >= 4) sessionCost = 40;
+        if (numberOfDaysSelected === 1) sessionCost = 45; // Example: Higher per-session for shorter commitment
+        else if (numberOfDaysSelected === 2) sessionCost = 42;
+        else if (numberOfDaysSelected === 3) sessionCost = 40;
+        else if (numberOfDaysSelected >= 4) sessionCost = 38;
         else return { error: "Invalid number of days selected (1-5)." };
     } else if (durationWeeks === 12) {
         // Pricing for a 12-week block (potentially lower per-session)
-        if (numberOfDaysSelected === 1) sessionCost = 50;
-        else if (numberOfDaysSelected === 2) sessionCost = 44;
-        else if (numberOfDaysSelected === 3) sessionCost = 40;
-        else if (numberOfDaysSelected >= 4) sessionCost = 38;
+        if (numberOfDaysSelected === 1) sessionCost = 40;
+        else if (numberOfDaysSelected === 2) sessionCost = 38;
+        else if (numberOfDaysSelected === 3) sessionCost = 36;
+        else if (numberOfDaysSelected >= 4) sessionCost = 34;
         else return { error: "Invalid number of days selected (1-5)." };
     } else {
         return { error: `Unsupported duration: ${durationWeeks} weeks. Only 6 or 12 weeks allowed.` };

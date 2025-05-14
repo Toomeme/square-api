@@ -37,7 +37,19 @@ router.post('/calculate-rolling-playgroup', async (req, res) => {
         const holidays = await Holiday.find({ date: { $gte: enrollmentStartDate, $lte: enrollmentEndDate } }).lean();
         const holidayDates = holidays.map(h => h.date);
 
-        let numberOfDaysSelected = 0; /* ... calculate from bitmask ... */
+        let numberOfDaysSelected = 0;
+        let tempMask = daysPerWeekBitmask;
+        while (tempMask > 0) {
+            if (tempMask & 1) numberOfDaysSelected++;
+            tempMask >>= 1; // Shift right
+        }
+         // Recalculate numberOfDays based on the bitmask, as the frontend might not send it
+         numberOfDaysSelected = 0;
+         tempMask = daysPerWeekBitmask;
+         while (tempMask > 0) {
+             tempMask &= (tempMask - 1); // Brian Kernighan's algorithm to count set bits
+             numberOfDaysSelected++;
+         }
 
         // Call the modified pricing function
         const costDetails = pricing.calculateRollingPlaygroupCost(
