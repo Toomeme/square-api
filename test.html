@@ -848,7 +848,7 @@
        // if (paymentFormDiv) paymentFormDiv.classList.add('hidden');
 
        try {
-            const response = await fetch(`${backendApiUrl}/api/pricing/calculate-playgroup`, {
+            const response = await fetch(`${backendApiUrl}/api/pricing/calculate-rolling-playgroup`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ /* semester details, bitmask, paymentType='full' */
                     semesterStartDate: playgroupSelections.semester.start,
