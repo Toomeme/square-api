@@ -642,33 +642,52 @@ router.get('/available-slots', async (req, res) => {
 });
 
 router.get('/rolling-slot-availability', authMiddleware, async (req, res) => {
-    const { scheduleId, checkStartDate: checkStartDateString, durationWeeks} = req.query;
-    const today = startOfDay(new Date()); // Start of today for comparison
+    console.log("--- ROLLING AVAILABILITY CHECK (BACKEND) ---");
+    console.log("Received Query Parameters:", JSON.stringify(req.query, null, 2)); // Log the whole query object
+
+    const { scheduleId, checkStartDate: checkStartDateString, durationWeeks } = req.query;
+
+    console.log(`Extracted scheduleId: '${scheduleId}' (type: ${typeof scheduleId})`);
+    console.log(`Extracted checkStartDateString: '${checkStartDateString}' (type: ${typeof checkStartDateString})`);
+    console.log(`Extracted durationWeeks: '${durationWeeks}' (type: ${typeof durationWeeks})`); // Log its raw value and type
+
+    const today = startOfDay(new Date());
 
     // --- Validation ---
     if (!scheduleId || !mongoose.Types.ObjectId.isValid(scheduleId)) {
+        console.error("Validation Error: Invalid or missing scheduleId.");
         return res.status(400).json({ message: 'Valid scheduleId is required.' });
     }
-    if (!checkStartDateString) {
-        return res.status(400).json({ message: 'checkStartDate (YYYY-MM-DD) is required.' });
+    if (!checkStartDateString || typeof checkStartDateString !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(checkStartDateString)) {
+        console.error("Validation Error: Invalid or missing checkStartDate format. Must be YYYY-MM-DD string.");
+        return res.status(400).json({ message: 'checkStartDate (YYYY-MM-DD string) is required.' });
     }
-    const parsedDuration = parseInt(durationWeeks, 10) || ROLLING_ENROLLMENT_WEEKS; // Use default if not provided or invalid
-if (isNaN(parsedDuration) || parsedDuration <= 0) { return res.status(400).json({ message: 'Rolling enrollment weeks is invalid' });}
+
+    // Explicitly check if durationWeeks is undefined, null, or an empty string BEFORE parsing
+    if (durationWeeks === undefined || durationWeeks === null || String(durationWeeks).trim() === '') {
+        console.error("Validation Error: durationWeeks is missing or empty.");
+        return res.status(400).json({ message: 'durationWeeks query parameter is required and cannot be empty.' });
+    }
+
+    const parsedDuration = parseInt(durationWeeks, 10);
+    console.log(`Parsed durationWeeks to integer: ${parsedDuration}`);
+
+    if (isNaN(parsedDuration) || parsedDuration <= 0) {
+        console.error(`Validation Error: parsedDuration is NaN or not positive. Original: '${durationWeeks}', Parsed: ${parsedDuration}`);
+        return res.status(400).json({ message: 'Rolling enrollment weeks is invalid (must be a positive number).' });
+    }
 
     let checkStartDate;
     try {
-        checkStartDate = parseISO(checkStartDateString); // Parses YYYY-MM-DD into Date object (at UTC midnight)
-        if (isNaN(checkStartDate.getTime())) throw new Error();
+        checkStartDate = parseISO(checkStartDateString); // Parses YYYY-MM-DD
+        if (isNaN(checkStartDate.getTime())) throw new Error("Parsed date is NaN");
+        console.log("Parsed checkStartDate:", checkStartDate.toISOString());
     } catch (e) {
+        console.error("Validation Error: Invalid checkStartDate format after parsing.", e.message);
         return res.status(400).json({ message: 'Invalid checkStartDate format. Use YYYY-MM-DD.' });
     }
-    // Optional: Ensure checkStartDate is not too far in the past or future
-    // if (isBefore(checkStartDate, addDays(today, -7)) || isBefore(addMonths(today, 6), checkStartDate)) {
-    //     return res.status(400).json({ message: 'Start date is out of acceptable range.' });
-    // }
 
-
-    console.log(`ROLLING AVAIL CHECK: Schedule ${scheduleId}, For 8 weeks starting from ${format(checkStartDate, 'yyyy-MM-dd')}`);
+    console.log(`ROLLING AVAIL CHECK: Schedule ${scheduleId}, For ${parsedDuration} weeks starting from ${format(checkStartDate, 'yyyy-MM-dd')}`);
 
     try {
         // 1. Fetch Schedule Details
@@ -750,7 +769,7 @@ if (isNaN(parsedDuration) || parsedDuration <= 0) { return res.status(400).json(
         console.log(`ROLLING AVAIL RESULT for ${scheduleId} starting ${checkStartDateString}:`, result);
         res.json(result);
 
-    } catch (error) {
+    }catch (error) {
         console.error(`Error checking rolling availability for schedule ${scheduleId}:`, error);
         res.status(500).json({ message: 'Error checking slot availability.' });
     }

@@ -480,29 +480,56 @@
        }
   }
 
-  async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId,checkStartDate) {
+  async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId, checkStartDate) {
     const capacitySpan = document.getElementById(capacitySpanId);
     if (!capacitySpan) return;
-    if (!checkStartDate) { // If no start date is provided, don't fetch
+
+    // Log inputs to this function
+    console.log("[FE] fetchAndDisplayCurrentCapacity called with:");
+    console.log("[FE]   scheduleId:", scheduleId, "(type:", typeof scheduleId + ")");
+    console.log("[FE]   capacitySpanId:", capacitySpanId);
+    console.log("[FE]   checkStartDate (param):", checkStartDate, "(type:", typeof checkStartDate + ")");
+
+    if (!checkStartDate) {
          capacitySpan.textContent = "(Select Start Date)"; return;
     }
 
-    capacitySpan.textContent = "(Checking...)"; // Update placeholder
+    capacitySpan.textContent = "(Checking...)";
 
     const token = localStorage.getItem('authToken');
-        if (!token) { // Need auth if endpoint is protected
-             capacitySpan.textContent = "(Login required)";
-             return;
-        }
+    if (!token) {
+         capacitySpan.textContent = "(Login required)";
+         return;
+    }
+
+    const currentDurationWeeks = playgroupSelections.durationWeeks;
+    console.log("[FE]   Using playgroupSelections.durationWeeks:", currentDurationWeeks, "(type:", typeof currentDurationWeeks + ")");
+
+    // Explicitly check parameters before constructing URL
+    if (!scheduleId || typeof scheduleId !== 'string' || scheduleId.trim() === '') {
+        console.error("[FE] Error: scheduleId is invalid before fetch.");
+        capacitySpan.textContent = "(Error: Invalid Schedule ID)"; return;
+    }
+    if (!checkStartDate || typeof checkStartDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(checkStartDate)) {
+        console.error("[FE] Error: checkStartDate is invalid before fetch. Expected YYYY-MM-DD string.");
+        capacitySpan.textContent = "(Error: Invalid Date)"; return;
+    }
+    if (currentDurationWeeks === undefined || currentDurationWeeks === null || String(currentDurationWeeks).trim() === '' || isNaN(parseInt(currentDurationWeeks, 10)) || parseInt(currentDurationWeeks, 10) <= 0) {
+        console.error("[FE] Error: currentDurationWeeks is invalid before fetch.");
+        capacitySpan.textContent = "(Error: Invalid Duration)"; return;
+    }
+
+
+    const fetchUrl = `${backendApiUrl}/api/bookings/rolling-slot-availability?scheduleId=${scheduleId}&checkStartDate=${checkStartDate}&durationWeeks=${currentDurationWeeks}`;
+    console.log("[FE] Constructing fetch URL:", fetchUrl);
 
     try {
-        console.log("FRONTEND: Value of checkStartDate being sent:", checkStartDate);
- const response = await fetch(
-            `${backendApiUrl}/api/bookings/rolling-slot-availability?scheduleId=${scheduleId}&checkStartDate=${checkStartDate}&durationWeeks=${playgroupSelections.durationWeeks}`,
+        const response = await fetch(
+            fetchUrl, // Use the constructed URL
             {
                 headers: {
                     'Authorization': `Bearer ${token}`,
-                    'ngrok-skip-browser-warning': 'true'
+                    'ngrok-skip-browser-warning': 'true' // If using ngrok
                 }
             }
         );
@@ -532,8 +559,8 @@
         } else { capacitySpan.textContent = "(Info unavailable)"; }
 
     } catch (error) {
-        console.error(`Error fetching capacity for ${scheduleId}:`, error);
-        capacitySpan.textContent = "(Error)";
+        console.error(`[FE] Error fetching capacity for ${scheduleId}:`, error);
+        capacitySpan.textContent = "(Fetch Error)";
     }
 }
 
