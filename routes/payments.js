@@ -9,8 +9,6 @@ const Holiday = require('../models/Holiday');
 const { addWeeks, format } = require('date-fns-tz'); // For date manipulation
 const { parseISO } = require('date-fns');
 
-const ROLLING_ENROLLMENT_WEEKS = 6;
-
 router.post('/create-checkout-session', authMiddleware, async (req, res) => {
     console.log("--- CREATE UNIFIED CHECKOUT SESSION ---");
     const userId = req.user._id;
@@ -18,6 +16,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         serviceType,
         // Playgroup specific (for ROLLING enrollment)
         startDate: playgroupStartDateString, // NEW: YYYY-MM-DD
+        durationWeeks: playgroupDurationWeeks,
         daysPerWeekBitmask,
         scheduleIds,
         paymentType, // 'full' or 'installment'
@@ -61,15 +60,18 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
         // --- Configure based on Service Type and Payment Type ---
 
         if (serviceType === 'playgroup') {
-            if (!playgroupStartDateString || daysPerWeekBitmask === undefined || !scheduleIds || !paymentType) {
+            if (!playgroupStartDateString || !playgroupDurationWeeks || daysPerWeekBitmask === undefined || !scheduleIds || !paymentType) {
                  return res.status(400).json({ message: "Missing playgroup details for rolling enrollment." });
             }
 
             const enrollmentStartDate = parseISO(playgroupStartDateString); // Parse to Date object (UTC midnight)
             if (isNaN(enrollmentStartDate.getTime())) return res.status(400).json({ message: 'Invalid playgroup start date format.' });
 
+            const parsedDuration = parseInt(playgroupDurationWeeks, 10);
+            if (isNaN(parsedDuration) || parsedDuration <= 0) return res.status(400).json({ message: 'Invalid playgroup duration format.' });
+
             // Calculate end date for this 6-week block
-            const enrollmentEndDate = addWeeks(enrollmentStartDate, ROLLING_ENROLLMENT_WEEKS);
+            const enrollmentEndDate = addWeeks(enrollmentStartDate, parsedDuration);
             enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1); // Inclusive end
 
             // Store calculated dates and original selections in metadata
@@ -82,6 +84,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
             let numberOfDaysSelected = 0; let tempMask = daysPerWeekBitmask;
             while (tempMask > 0) { tempMask &= (tempMask - 1); numberOfDaysSelected++; }
             metadata.daysPerWeek = numberOfDaysSelected;
+            metadata.durationWeeks = parsedDuration;
 
 
             // --- Calculate Cost for the 6-week block (SERVER-SIDE) ---
@@ -92,7 +95,7 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
                 daysPerWeekBitmask,
                 paymentType, // Pass paymentType to handle reg fee in cost calculation
                 enrollmentStartDate,
-                ROLLING_ENROLLMENT_WEEKS,
+                parsedDuration,
                 holidayDates
             );
             if (costDetails.error) throw new Error(`Cost calculation failed: ${costDetails.error}`);
@@ -129,14 +132,13 @@ router.post('/create-checkout-session', authMiddleware, async (req, res) => {
                 );
                 subscription_data = { metadata: { appUserId: userId.toString(), daysPerWeek: numberOfDaysSelected } };
 
-            } else { // paymentType === 'full' for rolling playgroup
+            } else { // 'full' payment
                 mode = 'payment';
-                console.log(`Setting up ONE-TIME payment for ROLLING Playgroup`);
                 line_items.push({
                     price_data: {
                         currency: 'usd',
                         product_data: {
-                            name: `Playgroup Rolling Enrollment (6 Weeks - ${numberOfDaysSelected} Day/Wk)`,
+                            name: `Playgroup Rolling Enrollment (${parsedDuration} Weeks - ${numberOfDaysSelected} Day/Wk)`,
                             description: `Starts: ${format(enrollmentStartDate, 'yyyy-MM-dd')}, Ends: ${format(enrollmentEndDate, 'yyyy-MM-dd')}`,
                         },
                         unit_amount: totalCostForBlockInCents,

@@ -642,7 +642,7 @@ router.get('/available-slots', async (req, res) => {
 });
 
 router.get('/rolling-slot-availability', authMiddleware, async (req, res) => {
-    const { scheduleId, checkStartDate: checkStartDateString } = req.query;
+    const { scheduleId, checkStartDate: checkStartDateString, durationWeeks} = req.query;
     const today = startOfDay(new Date()); // Start of today for comparison
 
     // --- Validation ---
@@ -652,6 +652,8 @@ router.get('/rolling-slot-availability', authMiddleware, async (req, res) => {
     if (!checkStartDateString) {
         return res.status(400).json({ message: 'checkStartDate (YYYY-MM-DD) is required.' });
     }
+    const parsedDuration = parseInt(durationWeeks, 10) || ROLLING_ENROLLMENT_WEEKS; // Use default if not provided or invalid
+if (isNaN(parsedDuration) || parsedDuration <= 0) { return res.status(400).json({ message: 'Rolling enrollment weeks is invalid' });}
 
     let checkStartDate;
     try {
@@ -676,7 +678,7 @@ router.get('/rolling-slot-availability', authMiddleware, async (req, res) => {
 
         // 2. Calculate the 8-week period based on checkStartDate
         const enrollmentStartDate = new Date(checkStartDate); // Use the provided start date
-        const enrollmentEndDate = addWeeks(enrollmentStartDate, ROLLING_ENROLLMENT_WEEKS);
+        const enrollmentEndDate = addWeeks(enrollmentStartDate, parsedDuration);
         enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1); // Inclusive end for 8 weeks
         console.log(` > Period: ${format(enrollmentStartDate, 'yyyy-MM-dd')} to ${format(enrollmentEndDate, 'yyyy-MM-dd')}`);
 
@@ -1112,153 +1114,152 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
         try {
             switch (eventType) {
                 case 'checkout.session.completed':
-                    const session = data.object;
+                    const session = data.object; // The Checkout Session object
                     console.log(`WH: Processing checkout.session.completed - Session ID: ${session.id}, Mode: ${session.mode}, Payment Status: ${session.payment_status}`);
                     console.log(`WH: Metadata: ${JSON.stringify(session.metadata, null, 2)}`);
 
-                    // Only fulfill if payment is successful or subscription setup is complete
+                    // Ensure payment was successful OR subscription setup is complete
                     if (session.payment_status === 'paid' || (session.mode === 'subscription' && session.status === 'complete')) {
-                        const { appUserId, bookingType, serviceType, ...otherMetadata } = session.metadata || {};
-                        if (!appUserId || !bookingType) { console.error(`WH CRITICAL: Missing appUserId or bookingType in metadata for session ${session.id}. Cannot fulfill.`); break; }
+                        const {
+                            appUserId,
+                            bookingType, // e.g., 'playgroup_rolling_installment', 'playgroup_rolling_full'
+                            serviceType, // Should be 'playgroup' for these cases
+                            // Playgroup specific metadata for rolling:
+                            enrollmentStartDate: enrollmentStartDateStr, // YYYY-MM-DD from metadata
+                            durationWeeks: durationWeeksStr,             // String from metadata
+                            scheduleIds: scheduleIdsJson,                // Stringified array from metadata
+                            daysPerWeekBitmask: daysBitmaskStr,          // String from metadata
+                            // For installments, these were calculated in payments.js and stored in metadata:
+                            numInstallments: numInstallmentsStr,
+                            installmentAmount: installmentAmountStr,     // Base installment amount
+                            firstInstallmentAmount: firstInstallmentAmountStr,
+                            totalSemesterCost: totalBlockCostStr,        // Total cost for this block
+                            // For other booking types:
+                            // openPlayOption, slotStart, slotEnd, partyDuration, bookedItems etc.
+                            ...otherMetadata // Catch any other metadata
+                        } = session.metadata || {};
 
-                        const referenceId = session.mode === 'subscription' ? session.subscription : session.payment_intent;
-                        const referenceType = session.mode === 'subscription' ? 'details.subscriptionId' : 'paymentIntentId';
-                        if (!referenceId) { console.error(`WH CRITICAL: Missing reference ID (Sub or PI) on session ${session.id}. Cannot fulfill.`); break; }
-                        console.log(`WH: Reference Type='${referenceType}', Reference ID='${referenceId}'`);
+                        // --- Basic Validation of Core Metadata ---
+                        if (!appUserId || !bookingType) {
+                            console.error(`WH CRITICAL: Missing appUserId ('${appUserId}') or bookingType ('${bookingType}') in metadata for session ${session.id}. Cannot fulfill.`);
+                            break; // Acknowledge event but cannot proceed
+                        }
+
+                        console.log(`WH: Fulfilling ${bookingType} for User ${appUserId}`);
+                        const paymentIntentId = session.payment_intent;     // For 'payment' mode
+                        const subscriptionId = session.subscription;       // For 'subscription' mode
 
                         // --- Idempotency Check ---
-                        console.log(`WH: Checking idempotency for ${referenceType} = ${referenceId}`);
-                        const existingRecord = await Booking.findOne({ [referenceType]: referenceId });
-                        if (existingRecord) { console.log(`WH: Idempotency check PASSED - Booking record already exists for ${referenceId}. Skipping.`); break; }
-                        // Also check User flag for subscriptions
-                        if (session.mode === 'subscription') {
-                            const userCheck = await User.findOne({ _id: appUserId, stripeSubscriptionId: session.subscription });
-                            if (userCheck && userCheck.playgroupBookingsCreatedForSub === session.subscription) {
-                                console.log(`WH: Idempotency check PASSED - User flag already set for sub ${session.subscription}. Skipping.`);
+                        // For one-time payments, check against paymentIntentId in Bookings
+                        // For subscriptions, check against subscriptionId in User (for setup) and Bookings (for actual class bookings)
+                        if (session.mode === 'payment' && paymentIntentId) {
+                            const existingPiBooking = await Booking.findOne({ paymentIntentId: paymentIntentId });
+                            if (existingPiBooking) {
+                                console.log(`WH: Idempotency: Fulfillment for PI ${paymentIntentId} (Session ${session.id}) seems already processed (Booking found).`);
                                 break;
                             }
-                            if (userCheck && userCheck.playgroupInstallmentsRemaining === undefined) {
-                                // User exists with sub ID but installment setup wasn't completed? Log warning.
-                                console.warn(`WH: User ${appUserId} has sub ID ${session.subscription} but installment details seem missing. Attempting setup again.`);
+                        } else if (session.mode === 'subscription' && subscriptionId) {
+                            // Check if User record already has this subscription and installment setup
+                            const userCheck = await User.findOne({ _id: appUserId, stripeSubscriptionId: subscriptionId });
+                            if (userCheck && userCheck.playgroupInstallmentsRemaining !== undefined && userCheck.playgroupBookingsCreatedForSub === subscriptionId) {
+                                 console.log(`WH: Idempotency: Subscription setup AND bookings for sub ${subscriptionId} already processed for user ${appUserId}.`);
+                                 break;
+                            } else if (userCheck && userCheck.playgroupInstallmentsRemaining !== undefined) {
+                                console.log(`WH: Idempotency: User setup for sub ${subscriptionId} done, awaiting first invoice.paid for bookings.`);
+                                // Don't break here if only user setup is done but bookings are not yet created (as bookings happen on first invoice.paid)
                             }
                         }
-                        console.log(`WH: Idempotency check OK - Proceeding with fulfillment.`);
 
 
-                        console.log(`WH: Routing fulfillment for bookingType: ${bookingType}`);
-                        // --- Route Fulfillment ---
-                        try { // Wrap specific fulfillment
-                            if (bookingType === 'playgroup_installment') {
-                                const subscriptionId = session.subscription; const customerId = session.customer;
-                                if (!subscriptionId) throw new Error("Missing subscription ID.");
-
-                                // --- Get Installment Details from METADATA ---
-                                const numInstallments = parseInt(otherMetadata.numInstallments, 10);
-                                const baseInstallmentAmount = parseInt(otherMetadata.installmentAmount, 10); // Base amount from metadata
-                                const totalSemesterCost = parseInt(otherMetadata.totalSemesterCost, 10);
-                                // const firstInstallmentAmount = parseInt(otherMetadata.firstInstallmentAmount, 10); // Also available if needed
-
-                                if (isNaN(numInstallments) || isNaN(baseInstallmentAmount) || isNaN(totalSemesterCost)) {
-                                    throw new Error("Invalid installment details found in session metadata.");
+                        // --- Route Fulfillment Based on bookingType ---
+                        try { // Wrap specific fulfillment actions
+                            if (bookingType === 'playgroup_rolling_installment') {
+                                if (!subscriptionId) throw new Error("Missing subscription ID for playgroup_rolling_installment.");
+                                if (!enrollmentStartDateStr || !durationWeeksStr || !scheduleIdsJson || !numInstallmentsStr || !installmentAmountStr || !totalBlockCostStr) {
+                                    throw new Error("Missing critical metadata for playgroup_rolling_installment setup.");
                                 }
-                                console.log(`WH: Using Metadata - NumInst=${numInstallments}, BaseInst=${baseInstallmentAmount}, TotalCost=${totalSemesterCost}`);
-                                console.log(`WH: Updating user ${appUserId} with sub ${subscriptionId} and installment details...`);
+
+                                const numInstallments = parseInt(numInstallmentsStr, 10);
+                                const baseInstallmentAmount = parseInt(installmentAmountStr, 10);
+                                const totalCostForBlock = parseInt(totalBlockCostStr, 10);
+                                const parsedDuration = parseInt(durationWeeksStr, 10);
+
+                                // 1. Update User record with Stripe IDs & installment plan details
+                                console.log(`WH: Updating user ${appUserId} with sub ${subscriptionId}, customer ${session.customer}, and rolling installment details.`);
                                 await User.findByIdAndUpdate(appUserId, {
                                     stripeSubscriptionId: subscriptionId,
-                                    stripeCustomerId: customerId,
-                                    playgroupInstallmentAmount: baseInstallmentAmount, // Store BASE amount
-                                    playgroupInstallmentsRemaining: numInstallments,   // Store TOTAL count initially
-                                    playgroupEnrollmentSemester: otherMetadata.semesterKey || `${otherMetadata.semesterStart}_${otherMetadata.semesterEnd}`,
-                                    playgroupBookingsCreatedForSub: null,
-                                    playgroupTotalSemesterCost: totalSemesterCost,     // Store total cost
-                                    playgroupTotalInstallments: numInstallments,        // Store total count
-                                }, { new: true }); // Ensure update completes before proceeding
+                                    stripeCustomerId: session.customer, // Get customer ID from session
+                                    playgroupInstallmentAmount: baseInstallmentAmount,
+                                    playgroupInstallmentsRemaining: numInstallments,
+                                    playgroupTotalSemesterCost: totalCostForBlock, // Cost for this 8-week block
+                                    playgroupTotalInstallments: numInstallments,
+                                    playgroupEnrollmentStartDate: enrollmentStartDateStr, // Store YYYY-MM-DD
+                                    playgroupEnrollmentEndDate: format(addWeeks(parseISO(enrollmentStartDateStr), parsedDuration -1), 'yyyy-MM-dd'), // Calculate and store end
+                                    playgroupEnrollmentDurationWeeks: parsedDuration, // Store duration
+                                    playgroupScheduleIds: scheduleIdsJson, // Store stringified schedule IDs
+                                    playgroupDaysBitmask: parseInt(otherMetadata.daysBitmask, 10), // Store bitmask
+                                    playgroupBookingsCreatedForSub: null // Bookings created on first invoice.paid
+                                });
+                                console.log(`WH: User ${appUserId} updated for rolling playgroup subscription. Bookings will be created on first invoice payment.`);
+                                // Note: Actual Booking documents for class sessions are created on the first 'invoice.paid' event.
 
-                                // 2. Attempt to Create Bookings NOW
-                                console.log("WH: Triggering createSemesterBookings service NOW...");
-                                const createdBookings = await createSemesterBookings(
+                            } else if (bookingType === 'playgroup_rolling_full') {
+                                if (!paymentIntentId) throw new Error("Missing payment_intent ID for playgroup_rolling_full.");
+                                if (!enrollmentStartDateStr || !durationWeeksStr || !scheduleIdsJson) {
+                                    throw new Error("Missing critical metadata for playgroup_rolling_full.");
+                                }
+                                const parsedDuration = parseInt(durationWeeksStr, 10);
+                                const enrollmentEndDate = format(addWeeks(parseISO(enrollmentStartDateStr), parsedDuration -1), 'yyyy-MM-dd');
+
+
+                                console.log(`WH: Calling createRollingPlaygroupBookings (Full Payment) for PI ${paymentIntentId}...`);
+                                await createRollingPlaygroupBookings(
                                     appUserId,
-                                    otherMetadata.semesterStart,
-                                    otherMetadata.semesterEnd,
-                                    JSON.parse(otherMetadata.scheduleIds || '[]'),
-                                    subscriptionId
+                                    enrollmentStartDateStr, // Pass as YYYY-MM-DD string
+                                    enrollmentEndDate,      // Pass calculated end date string
+                                    JSON.parse(scheduleIdsJson || '[]'),
+                                    paymentIntentId,
+                                    false // isSubscription = false
                                 );
+                                // No User flag like playgroupBookingsCreatedForSub for one-time PIs, idempotency relies on PI in Booking doc
 
-                                // 3. Mark Bookings as Created on User (if successful)
-                                await User.findByIdAndUpdate(appUserId, { playgroupBookingsCreatedForSub: subscriptionId });
-                                console.log(`WH: Successfully created ${createdBookings.length} bookings and updated user flag for sub ${subscriptionId}`);
-                                if (createdBookings.length > 0) {
-                                    // Send details of the first booking as representative, plus count
-                                    const representativeBooking = await Booking.findById(createdBookings[0]._id).populate('user', 'username email').lean(); // Fetch with user info
-                                    if (representativeBooking) {
-                                         await sendAdminBookingNotification({
-                                             ...representativeBooking, // Spread booking details
-                                             _id: `Semester (${createdBookings.length} sessions)`, // Modify ID display
-                                             serviceType: 'Playgroup Semester (Installment)' // Modify service display
-                                         });
-                                     }
-                                 }
+                            } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday' || bookingType === 'multi_child_or_slot') {
+                                if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
+                                const itemsToBook = JSON.parse(otherMetadata.bookedItems || '[]'); // Assumes bookedItems for these types
+                                if (itemsToBook.length === 0) throw new Error("No items found for slot booking.");
 
-                            } else if (bookingType === 'playgroup_full') {
-                                const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error("Missing PI for full playgroup.");
-                                console.log(`WH: Calling createSemesterBookingsOneTime for PI ${paymentIntentId}...`);
-                                const createdBookings = await createSemesterBookingsOneTime(appUserId, otherMetadata.semesterStart, otherMetadata.semesterEnd, JSON.parse(otherMetadata.scheduleIds || '[]'), paymentIntentId);
-                                if (createdBookings.length > 0) {
-                                    const representativeBooking = await Booking.findById(createdBookings[0]._id).populate('user', 'username email').lean();
-                                    if (representativeBooking) {
-                                         await sendAdminBookingNotification({
-                                             ...representativeBooking,
-                                             _id: `Semester (${createdBookings.length} sessions)`,
-                                             serviceType: 'Playgroup Semester (Full Payment)'
-                                         });
-                                     }
-                                 }
-
-                            } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday') {
-                                const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
-                                if (!otherMetadata.slotStart || !otherMetadata.slotEnd) throw new Error(`Missing slot data for ${bookingType}.`);
-                                let itemDetails;
-                                try { itemDetails = JSON.parse(otherMetadata.originalItemDetails || '{}'); } // Use otherMetadata
-                                catch(e) { console.error("WH Error: Failed to parse originalItemDetails"); break; }
-        
-                                const quantityToBook = parseInt(itemDetails.quantity, 10) || 1;
-                                console.log(`WH: Calling createSlotBooking for PI ${paymentIntentId} with quantity ${quantityToBook}`);
-                                const savedBooking = await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, quantityToBook, otherMetadata);
-                                const populatedBooking = await Booking.findById(savedBooking._id).populate('user', 'username email').lean();
-                         if (populatedBooking) await sendAdminBookingNotification(populatedBooking);
+                                const dbSession = await mongoose.startSession();
+                                dbSession.startTransaction();
+                                try {
+                                    for (const item of itemsToBook) {
+                                        const quantity = parseInt(item.quantity, 10) || 1;
+                                        await createSlotBooking(appUserId, item.start, item.end, item.serviceType, paymentIntentId, quantity, { ...otherMetadata, ...item, calculatedAmount: item.costPerUnit * quantity }, dbSession);
+                                    }
+                                    await dbSession.commitTransaction();
+                                } catch (slotError) {
+                                    await dbSession.abortTransaction(); throw slotError;
+                                } finally { dbSession.endSession(); }
 
                             } else if (bookingType === 'openplay_purchase') {
-                                const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error("Missing PI for openplay_purchase.");
+                                if (!paymentIntentId) throw new Error("Missing PI for openplay_purchase.");
                                 if (!otherMetadata.openPlayOption) throw new Error("Missing openPlayOption.");
-                                console.log(`WH: Calling updateUserPurchase for PI ${paymentIntentId}...`);
-                                const { updatedUser, purchaseRecord } = await updateUserPurchase(appUserId, otherMetadata.openPlayOption, paymentIntentId, otherMetadata);
-                                const populatedRecord = await Booking.findById(purchaseRecord._id).populate('user', 'username email').lean();
-                                if (populatedRecord) await sendAdminBookingNotification(populatedRecord);
-       
-                           } else { console.warn(`WH: Unhandled bookingType: ${bookingType}`); }
+                                await updateUserPurchase(appUserId, otherMetadata.openPlayOption, paymentIntentId, otherMetadata);
 
+                            } else {
+                                console.warn(`WH: Unhandled bookingType in checkout.session.completed: ${bookingType}`);
+                            }
                             console.log(`WH: Successfully completed fulfillment logic for ${bookingType} / session ${session.id}`);
 
-                        } catch (fulfillmentError) { // Catch errors from the service functions
+                        } catch (fulfillmentError) {
                             console.error(`WH CRITICAL: Fulfillment failed for session ${session.id} (bookingType: ${bookingType}):`, fulfillmentError);
                             await notifyAdminOfBookingFailure(appUserId, `Webhook fulfillment failed for ${bookingType} / session ${session.id}: ${fulfillmentError.message}`);
-
-                            // --- Attempt to Cancel Subscription if Booking Failed ---
-                            if (bookingType === 'playgroup_installment' && session.subscription) {
-                                console.warn(`WH: Attempting to cancel subscription ${session.subscription} due to booking failure...`);
-                                try {
-                                    await stripe.subscriptions.cancel(session.subscription);
-                                    console.log(`WH: Successfully cancelled subscription ${session.subscription}.`);
-                                } catch (cancelError) {
-                                    console.error(`WH: CRITICAL - Failed to cancel subscription ${session.subscription}:`, cancelError);
-                                    await notifyAdminOfBookingFailure(appUserId, `FAILED TO AUTO-CANCEL sub ${session.subscription}`);
-                                }
-                            }
-                            // *** IMPORTANT: Re-throw the error so the OUTER catch handles the response ***
-                            throw fulfillmentError;
-                            // return res.status(200).json({ received: true, error: `Internal fulfillment error.` }); // REMOVE THIS LINE
+                            if (bookingType === 'playgroup_rolling_installment' && subscriptionId) { /* ... attempt to cancel sub ... */ }
+                            // Respond 200 OK to Stripe to acknowledge receipt and prevent retries for app logic errors
+                            return res.status(200).json({ received: true, error: `Internal fulfillment error: ${fulfillmentError.message}` });
                         }
-                    } else { console.warn(`WH: Checkout session ${session.id} completed but payment_status is '${session.payment_status}'. No fulfillment action taken.`); }
+                    } else {
+                         console.warn(`WH: Checkout session ${session.id} completed but payment_status is '${session.payment_status}' OR mode/status not handled. No fulfillment action taken.`);
+                    }
                     break; // End checkout.session.completed case
 
 
@@ -1350,37 +1351,52 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
                     }
                     break;
 
-                case 'invoice.paid':
-                    const invoicePaid = data.object;
-                    console.log(`WH: Invoice Paid ${invoicePaid.id}, Sub: ${invoicePaid.subscription}, Reason: ${invoicePaid.billing_reason}`);
-                    if (invoicePaid.subscription) {
-                        const user = await User.findOne({ stripeSubscriptionId: invoicePaid.subscription });
-                        if (user && user.email) {
-                            await sendInstallmentConfirmationEmail(user.email, invoicePaid.amount_paid);
-                            // Redundancy check for booking creation
-                            if (invoicePaid.billing_reason === 'subscription_create' && user.playgroupBookingsCreatedForSub !== invoicePaid.subscription) {
-                                console.error(`WH ALERT: First invoice paid for sub ${invoicePaid.subscription}, but bookings flag not set on user ${user._id}! Fulfillment might have failed earlier.`);
-                                await notifyAdminOfBookingFailure(user._id, `Booking flag mismatch on first invoice paid for sub ${invoicePaid.subscription}.`);
-                            }
-                        }
-                        if (user && user.playgroupInstallmentsRemaining !== undefined && user.playgroupInstallmentsRemaining === 0) {
-                            // Check if the subscription is ALREADY scheduled to cancel
-                            try {
-                                const subscription = await stripe.subscriptions.retrieve(invoicePaid.subscription);
-                                if (subscription && !subscription.cancel_at_period_end && subscription.status === 'active') {
-                                    console.warn(`WH InvoicePaid: Detected 0 installments remaining for sub ${invoicePaid.subscription}, but it's not scheduled to cancel. Scheduling cancellation now.`);
-                                    await stripe.subscriptions.update(invoicePaid.subscription, { cancel_at_period_end: true });
-                                } else if (subscription && subscription.cancel_at_period_end) {
-                                    console.log(`WH InvoicePaid: Sub ${invoicePaid.subscription} already scheduled to cancel. No action needed.`);
-                                } else {
-                                    console.log(`WH InvoicePaid: Sub ${invoicePaid.subscription} status is '${subscription?.status}'. No cancellation action needed.`);
-                                }
-                            } catch (subError) {
-                                console.error(`WH InvoicePaid: Error checking/updating subscription ${invoicePaid.subscription} for cancellation:`, subError);
-                            }
-                        }
-                    }
-                    break;
+                    case 'invoice.paid':
+                        const invoicePaid = data.object;
+                        console.log(`WH: Invoice Paid ${invoicePaid.id}, Sub: ${invoicePaid.subscription}, Reason: ${invoicePaid.billing_reason}`);
+                        // --- Trigger Booking Creation on FIRST successful subscription invoice payment ---
+                        if (invoicePaid.subscription && invoicePaid.billing_reason === 'subscription_create') { // First invoice after checkout
+                             console.log(` > First invoice paid for subscription ${invoicePaid.subscription}.`);
+                             const user = await User.findOne({ stripeSubscriptionId: invoicePaid.subscription })
+                                 .select('+playgroupEnrollmentStartDate +playgroupEnrollmentEndDate +playgroupBookingsCreatedForSub +playgroupScheduleIds +playgroupEnrollmentDurationWeeks'); // Add fields needed
+    
+                             if (user && user.playgroupBookingsCreatedForSub !== invoicePaid.subscription && user.playgroupEnrollmentStartDate && user.playgroupEnrollmentEndDate && user.playgroupScheduleIds && user.playgroupEnrollmentDurationWeeks) {
+                                 console.log(` > Triggering createRollingPlaygroupBookings for user ${user._id} for their new rolling enrollment...`);
+                                 try {
+                                     const scheduleIds = JSON.parse(user.playgroupScheduleIds || '[]');
+                                     if (scheduleIds.length === 0) throw new Error("No scheduleIds stored on user for booking creation.");
+    
+                                     await createRollingPlaygroupBookings(
+                                         user._id.toString(),
+                                         user.playgroupEnrollmentStartDate, // Use string YYYY-MM-DD from DB
+                                         user.playgroupEnrollmentEndDate,   // Use string YYYY-MM-DD from DB
+                                         scheduleIds,
+                                         invoicePaid.subscription,
+                                         true // isSubscription = true
+                                     );
+                                     await User.findByIdAndUpdate(user._id, { playgroupBookingsCreatedForSub: invoicePaid.subscription });
+                                     console.log(` > Marked bookings as created for sub ${invoicePaid.subscription}`);
+                                     if (user.email) await sendInstallmentConfirmationEmail(user.email, invoicePaid.amount_paid); // Send initial confirmation
+    
+                                 } catch(bookingError) {
+                                    console.error(` > CRITICAL: Failed to create rolling bookings on first invoice payment for sub ${invoicePaid.subscription}:`, bookingError);
+                                    await notifyAdminOfBookingFailure(user._id, `Booking creation failed for rolling sub ${invoicePaid.subscription}: ${bookingError.message}`);
+                                    // Don't return 500, payment succeeded. Admin needs to intervene.
+                                 }
+                             } else if (user && user.playgroupBookingsCreatedForSub === invoicePaid.subscription) {
+                                 console.log(` > Bookings already created for sub ${invoicePaid.subscription}. Sending payment confirmation.`);
+                                  if (user.email) await sendInstallmentConfirmationEmail(user.email, invoicePaid.amount_paid);
+                             } else if (user) {
+                                  console.error(` > User ${user._id} found for sub ${invoicePaid.subscription}, but missing necessary enrollment details (startDate, endDate, scheduleIds, duration) to create bookings.`);
+                                  await notifyAdminOfBookingFailure(user._id, `Missing enrollment details for sub ${invoicePaid.subscription} on first invoice.paid.`);
+                             } else {
+                                 console.error(` > User not found for paid subscription ${invoicePaid.subscription}!`);
+                             }
+                         } else if (invoicePaid.subscription) { // Subsequent installment payments
+                              const user = await User.findOne({ stripeSubscriptionId: invoicePaid.subscription });
+                              if (user && user.email) await sendInstallmentConfirmationEmail(user.email, invoicePaid.amount_paid);
+                         }
+                        break;
 
                 case 'invoice.payment_failed':
                     const invoiceFailed = data.object;

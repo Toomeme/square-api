@@ -76,15 +76,18 @@ router.post('/calculate-playgroup', async (req, res) => {
 
 router.post('/calculate-rolling-playgroup', async (req, res) => {
     console.log("--- CALCULATE ROLLING PLAYGROUP COST HANDLER ---");
-    const { startDate: startDateString, daysPerWeekBitmask, paymentType } = req.body;
-    const durationWeeks = 6; // Define duration
+    const { startDate: startDateString, daysPerWeekBitmask, paymentType, durationWeeks } = req.body;
 
         // Basic Input Validation
-        if (!semesterStartDate || !semesterEndDate || daysPerWeekBitmask === undefined || !paymentType) {
+        if (!semesterStartDate || !semesterEndDate || daysPerWeekBitmask === undefined || !paymentType || !durationWeeks) {
             return res.status(400).json({ message: 'Missing required fields for cost calculation.' });
         }
         if (typeof daysPerWeekBitmask !== 'number' || daysPerWeekBitmask <= 0) {
             return res.status(400).json({ message: 'Invalid daysPerWeekBitmask.' });
+        }
+        const parsedDuration = parseInt(durationWeeks, 10);
+        if (isNaN(parsedDuration) || parsedDuration <= 0) {
+            return res.status(400).json({ message: "Invalid durationWeeks." });
         }
     // Validate date format
     const enrollmentStartDate = new Date(startDateString + 'T00:00:00.000Z'); // Treat as UTC start day
@@ -92,7 +95,7 @@ router.post('/calculate-rolling-playgroup', async (req, res) => {
 
     try {
         // Calculate end date for holiday fetching
-        const enrollmentEndDate = addWeeks(enrollmentStartDate, durationWeeks);
+        const enrollmentEndDate = addWeeks(enrollmentStartDate, parsedDuration);
         enrollmentEndDate.setDate(enrollmentEndDate.getDate() - 1);
 
         // Fetch holidays within the specific range
@@ -107,7 +110,7 @@ router.post('/calculate-rolling-playgroup', async (req, res) => {
             daysPerWeekBitmask,
             paymentType,
             enrollmentStartDate, // Pass Date object
-            durationWeeks,
+            parsedDuration,
             holidayDates         // Pass Date objects
         );
 

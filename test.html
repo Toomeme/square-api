@@ -24,13 +24,15 @@
   let selectedService = null;
   let selectedDate = null;
   let selectedSlot = null; // For Open Play / Birthday
-  let playgroupSelections = { // For Playgroup
-      semester: null,
-      daysBitmask: 0, // Bitmask: Sun=1, Mon=2, Tue=4, Wed=8, Thu=16, Fri=32, Sat=64
-      paymentType: 'full',
-      calculatedCost: null,
-      scheduleIds: [] // Store ClassSchedule IDs for selected day/times
-  };
+  let playgroupSelections = {
+    semester: null, // Keep for now if other parts use it, or refactor to remove fully
+    startDate: null,
+    daysBitmask: 0,
+    paymentType: 'full',
+    calculatedCost: null,
+    scheduleIds: [],
+    durationWeeks: 6 // *** NEW: Default duration ***
+};
   let stripe = null;
   // Use consistent key 'authToken'
   let authToken = localStorage.getItem('authToken');
@@ -61,7 +63,7 @@
   const selectedCostSpan = document.getElementById('selected-cost');
   const loginPromptDiv = document.getElementById('login-prompt');
   const messagesDiv = document.getElementById('messages');
-
+  const playgroupDurationSelect = document.getElementById('pg-duration-weeks');
   // Payment Section Elements (Simplified)
   const paymentFormDiv = document.getElementById('payment-form'); // Keep the container to hide/show
   // Repurpose the submit button for checkout
@@ -190,7 +192,9 @@
           bookingDateInput.value = today;
           bookingDateInput.min = today;
       }
-
+      if (playgroupDurationSelect) {
+        playgroupSelections.durationWeeks = parseInt(playgroupDurationSelect.value, 10); // Set initial from dropdown
+    }
       // Check auth UI login status if auth elements are on the page
       checkAuthUILoginStatus();
   }
@@ -338,6 +342,22 @@
             resetPlaygroupCost();
         });
       }
+
+      if (playgroupDurationSelect) {
+    playgroupDurationSelect.addEventListener('change', (e) => {
+        const newDuration = parseInt(e.target.value, 10);
+        if (!isNaN(newDuration) && newDuration > 0) {
+            playgroupSelections.durationWeeks = newDuration;
+            console.log("Playgroup Duration selected:", newDuration, "weeks");
+            // When duration changes, costs and availability might change
+            updatePlaygroupPaymentDisplays(); // Recalculate and display costs
+            // You might also want to re-check/clear current day selections
+            // or re-fetch capacities if the period changes significantly
+            // For now, just updating cost display.
+            checkBookingLoginStatus();
+        }
+    });
+}
 
       if (document.getElementById('pg-start-date')) { // Assuming you add id="pg-start-date"
     const pgStartDateInput = document.getElementById('pg-start-date');
@@ -526,7 +546,7 @@
       if (!paymentOptionsDiv || !fullPaymentSummaryBox || !installmentDetailsBox) return; // Ensure elements exist
 
       // Hide both initially if no days selected
-      if (!playgroupSelections.startDate || playgroupSelections.daysBitmask === 0) {
+      if (!playgroupSelections.startDate || playgroupSelections.daysBitmask === 0 || !playgroupSelections.durationWeeks) {
         if (paymentOptionsDiv) paymentOptionsDiv.classList.add('hidden');
         return; // Exit if not enough info
     }
@@ -547,7 +567,8 @@
             body: JSON.stringify({
                 startDate: playgroupSelections.startDate, // YYYY-MM-DD string
                 daysPerWeekBitmask: playgroupSelections.daysBitmask,
-                paymentType: 'full' // Always calculate 'full' cost for this section
+                paymentType: 'full', // Always calculate 'full' cost for this section
+                durationWeeks: playgroupSelections.durationWeeks 
             })
         });
           if (!response.ok) throw new Error('Failed to calculate cost');
@@ -1085,6 +1106,8 @@ if (selectedService === 'playgroup') {
         ...checkoutData,
         paymentType: playgroupSelections.paymentType,
         semesterDetails: playgroupSelections.semester,
+        startDate: playgroupSelections.startDate,         // *** ADDED ***
+            durationWeeks: playgroupSelections.durationWeeks, // *** ADDED ***
         daysPerWeekBitmask: playgroupSelections.daysBitmask,
         scheduleIds: playgroupSelections.scheduleIds,
         // Playgroup quantity: If you allow multiple children for semester,
@@ -1273,34 +1296,70 @@ if (monthlyCostSpan) monthlyCostSpan.textContent = '$TBD';
   }
 
    // --- Helper to populate the Installment Plan UI ---
-   function populatePlaygroupInstallmentUI() {
-       const monthlyCostSpan = document.getElementById('installment-monthly-cost');
-       if (!monthlyCostSpan) return;
+// --- Helper to populate the Installment Plan UI ---
+function populatePlaygroupInstallmentUI() {
+    const installmentDetailsBox = document.getElementById('installment-details'); // The main div for installment info
+    const monthlyCostSpan = document.getElementById('installment-monthly-cost');
+    const installmentMessageSpan = document.getElementById('installment-plan-message'); // Optional: Add a span for # of installments
 
-       // Calculate number of days selected
-       let numberOfDaysSelected = 0; let tempMask = playgroupSelections.daysBitmask;
-       while (tempMask > 0) { tempMask &= (tempMask - 1); numberOfDaysSelected++; }
+    if (!installmentDetailsBox || !monthlyCostSpan) {
+        console.warn("Installment UI elements not found.");
+        return;
+    }
 
-       // --- Determine Monthly Cost ---
-       // IMPORTANT: This needs to match your Stripe Price setup.
-       // Fetch this from backend OR have a mapping here.
-       // Example mapping (replace with actual monthly amounts for YOUR Stripe Prices):
-       let monthlyCost = 0;
-       switch (numberOfDaysSelected) {
-            case 1: monthlyCost = 180; break; // Example: $180/month for 1 day/wk
-            case 2: monthlyCost = 320; break; // Example: $320/month for 2 days/wk
-            case 3: monthlyCost = 440; break; // Example: $440/month for 3 days/wk
-            case 4: case 5: monthlyCost = 520; break; // Example: $520/month for 4/5 days/wk
-            default: monthlyCost = 0; break;
-       }
+    // Get the selected duration and the calculated full cost (which is the class cost before reg fee)
+    const selectedDurationWeeks = playgroupSelections.durationWeeks; // Should be 6 or 12
+    const fullClassCostDetails = playgroupSelections.calculatedCost; // Cost from 'full' calculation
 
-       if (monthlyCost > 0) {
-           monthlyCostSpan.textContent = `$${monthlyCost.toFixed(2)} / month`;
-       } else {
-           monthlyCostSpan.textContent = '$TBD (Select days)';
-       }
-       // You could add logic here to calculate/display number of installments based on semester dates
-   }
+    if (!selectedDurationWeeks || !fullClassCostDetails || fullClassCostDetails.error || fullClassCostDetails.totalActualCost <= 0) {
+        monthlyCostSpan.textContent = '$TBD (Select days & duration)';
+        if (installmentMessageSpan) installmentMessageSpan.textContent = '';
+        installmentDetailsBox.classList.add('hidden'); // Hide if not enough info
+        return;
+    }
+
+    installmentDetailsBox.classList.remove('hidden'); // Show the box
+
+    // --- Determine Installment Structure based on Duration ---
+    const registrationFee = 25; // Assuming $25 for installments
+    const totalClassCost = fullClassCostDetails.totalActualCost; // This is the cost of classes *without* the reg fee yet.
+
+    let numInstallments = 0;
+    let descriptionOfInstallments = "";
+
+    if (selectedDurationWeeks === 12 || selectedDurationWeeks === 6) {
+        numInstallments = 3;
+        descriptionOfInstallments = `${numInstallments} monthly payments after the initial registration fee.`;
+    } else {
+        monthlyCostSpan.textContent = 'Unsupported duration for installments.';
+        if (installmentMessageSpan) installmentMessageSpan.textContent = '';
+        return;
+    }
+
+    // Calculate approximate amount per class cost installment
+    let amountPerClassInstallment = 0;
+    if (numInstallments > 0) {
+        amountPerClassInstallment = Math.ceil((totalClassCost / numInstallments) * 100) / 100; // Round up cents
+    }
+
+    // Update the UI
+    if (amountPerClassInstallment > 0) {
+        monthlyCostSpan.innerHTML = `Approx. <strong>$${amountPerClassInstallment.toFixed(2)} per installment</strong> for class costs.<br>
+                                     Plus a one-time $${registrationFee.toFixed(2)} registration fee.`;
+    } else if (totalClassCost > 0 && numInstallments === 0) { // E.g. if 6 weeks was designed as reg_fee + full_class_cost
+         monthlyCostSpan.innerHTML = `Total class cost of <strong>$${totalClassCost.toFixed(2)}</strong>.<br>
+                                     Plus a one-time $${registrationFee.toFixed(2)} registration fee.`;
+    }
+    else {
+        monthlyCostSpan.textContent = '$TBD (Confirm selections)';
+    }
+
+    if (installmentMessageSpan) {
+        installmentMessageSpan.textContent = descriptionOfInstallments;
+    }
+
+    console.log(`Installment UI Updated: Duration=${selectedDurationWeeks}wks, Approx Monthly=$${amountPerClassInstallment}, NumInst=${numInstallments}, TotalClassCost=$${totalClassCost}`);
+}
 
    // Basic JWT parsing - consider a library for production robustness
   function parseJwt (token) {
