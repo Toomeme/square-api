@@ -1247,22 +1247,18 @@ router.post('/webhook', express.raw({ type: 'application/json' }), async (req, r
                                 );
                                 // No User flag like playgroupBookingsCreatedForSub for one-time PIs, idempotency relies on PI in Booking doc
 
-                            } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday' || bookingType === 'multi_child_or_slot') {
-                                if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
-                                const itemsToBook = JSON.parse(otherMetadata.bookedItems || '[]'); // Assumes bookedItems for these types
-                                if (itemsToBook.length === 0) throw new Error("No items found for slot booking.");
-
-                                const dbSession = await mongoose.startSession();
-                                dbSession.startTransaction();
-                                try {
-                                    for (const item of itemsToBook) {
-                                        const quantity = parseInt(item.quantity, 10) || 1;
-                                        await createSlotBooking(appUserId, item.start, item.end, item.serviceType, paymentIntentId, quantity, { ...otherMetadata, ...item, calculatedAmount: item.costPerUnit * quantity }, dbSession);
-                                    }
-                                    await dbSession.commitTransaction();
-                                } catch (slotError) {
-                                    await dbSession.abortTransaction(); throw slotError;
-                                } finally { dbSession.endSession(); }
+                            } else if (bookingType === 'openplay_dropin' || bookingType === 'birthday') {
+                                const paymentIntentId = session.payment_intent; if (!paymentIntentId) throw new Error(`Missing PI for ${bookingType}.`);
+                                if (!otherMetadata.slotStart || !otherMetadata.slotEnd) throw new Error(`Missing slot data for ${bookingType}.`);
+                                let itemDetails;
+                                try { itemDetails = JSON.parse(otherMetadata.originalItemDetails || '{}'); } // Use otherMetadata
+                                catch(e) { console.error("WH Error: Failed to parse originalItemDetails"); break; }
+        
+                                const quantityToBook = parseInt(itemDetails.quantity, 10) || 1;
+                                console.log(`WH: Calling createSlotBooking for PI ${paymentIntentId} with quantity ${quantityToBook}`);
+                                const savedBooking = await createSlotBooking(appUserId, otherMetadata.slotStart, otherMetadata.slotEnd, serviceType, paymentIntentId, quantityToBook, otherMetadata);
+                                const populatedBooking = await Booking.findById(savedBooking._id).populate('user', 'username email').lean();
+                         if (populatedBooking) await sendAdminBookingNotification(populatedBooking);
 
                             } else if (bookingType === 'openplay_purchase') {
                                 if (!paymentIntentId) throw new Error("Missing PI for openplay_purchase.");
