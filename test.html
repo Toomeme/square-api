@@ -1,3 +1,35 @@
+<div id="waiver-modal" class="waiver-modal-overlay" style="display: none;">
+    <div class="waiver-modal-content">
+        <span class="waiver-modal-close-button">×</span>
+        <h2>Liability Waiver & Agreement</h2>
+        <div class="waiver-text-container">
+            <!-- PASTE YOUR FULL WAIVER TEXT HERE -->
+            <p>This is a sample waiver. Please read carefully...</p>
+            <p><strong>Participant Agreement, Release and Assumption of Risk</strong></p>
+            <p>In consideration of the services of Little Friends Play Space LLC, their agents, owners, officers, volunteers, participants, employees, and all other persons or entities acting in any capacity on their behalf (hereinafter collectively referred to as "LFPS"), I hereby agree to release, indemnify, and discharge LFPS, on behalf of myself, my spouse, my children, my parents, my heirs, assigns, personal representative and estate as follows:</p>
+            <p>1. I acknowledge that my participation in LFPS activities entails known and unanticipated risks that could result in physical or emotional injury, paralysis, death, or damage to myself, to property, or to third parties...</p>
+            <!-- ... more paragraphs of your waiver ... -->
+            <p>By signing this document, I acknowledge that if anyone is hurt or property is damaged during my participation in this activity, I may be found by a court of law to have waived my right to maintain a lawsuit against LFPS on the basis of any claim from which I have released them herein.</p>
+            <p>I have had sufficient opportunity to read this entire document. I have read and understood it, and I agree to be bound by its terms.</p>
+            <!-- END OF WAIVER TEXT -->
+        </div>
+
+        <div class="waiver-signature-area">
+            <div class="waiver-form-group">
+                <input type="checkbox" id="waiver-agree-checkbox" name="waiver-agree">
+                <label for="waiver-agree-checkbox">I have read, understood, and agree to the terms of this waiver.</label>
+            </div>
+            <div class="waiver-form-group">
+                <label for="waiver-signature-name">Type Full Name (as E-Signature):</label>
+                <input type="text" id="waiver-signature-name" name="waiver-signature-name" placeholder="Your Full Name">
+            </div>
+            <button id="waiver-submit-button" disabled>Agree & Continue</button>
+            <p id="waiver-error-message" style="color: red; display: none;"></p>
+        </div>
+    </div>
+</div>
+
+
 <script src="https://js.stripe.com/v3/"></script>
 <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
 
@@ -89,8 +121,42 @@
   const loggedInUsernameSpan = document.getElementById('logged-in-username');
   const logoutButton = document.getElementById('logout-button');
 
+    const waiverModal = document.getElementById('waiver-modal');
+    const closeButton = document.querySelector('.waiver-modal-close-button');
+    const agreeCheckbox = document.getElementById('waiver-agree-checkbox');
+    const signatureNameInput = document.getElementById('waiver-signature-name');
+    const waiverSubmitButton = document.getElementById('waiver-submit-button');
+    const waiverErrorMessage = document.getElementById('waiver-error-message');
 
+    let waiverSigned = false;
   // --- FUNCTION DEFINITIONS (ALL FUNCTIONS HERE) ---
+
+      // --- Function to Open Waiver Modal ---
+      function openWaiverModal() {
+        if (waiverModal) {
+            waiverModal.style.display = 'flex';
+            // Reset waiver form
+            if (agreeCheckbox) agreeCheckbox.checked = false;
+            if (signatureNameInput) signatureNameInput.value = '';
+            if (waiverSubmitButton) waiverSubmitButton.disabled = true;
+            if (waiverErrorMessage) waiverErrorMessage.style.display = 'none';
+        }
+    }
+
+    // --- Function to Close Waiver Modal ---
+    function closeWaiverModal() {
+        if (waiverModal) {
+            waiverModal.style.display = 'none';
+        }
+    }
+
+    // --- Function to Check Waiver Form Validity (for enabling submit) ---
+    function checkWaiverFormValidity() {
+        if (agreeCheckbox && signatureNameInput && waiverSubmitButton) {
+            const nameTyped = signatureNameInput.value.trim().length > 3; // Basic name check
+            waiverSubmitButton.disabled = !(agreeCheckbox.checked && nameTyped);
+        }
+    }
 
   async function fetchAvailableSlotsRange(serviceType) {
       if (!availableSlotsContainer || !loadingSlotsIndicator) {
@@ -202,24 +268,37 @@
   // Renamed: Checks login status specifically for the BOOKING UI elements
   function checkBookingLoginStatus() {
     authToken = localStorage.getItem('authToken');
-      const canProceed = isSelectionValidForCheckout();
+      const isSelectionOkay = isSelectionValidForCheckout();
 
       // Handle Login Prompt
       if (loginPromptDiv) {
           loginPromptDiv.classList.toggle('hidden', !!authToken);
       }
 
-      // Handle Main Checkout Button Visibility/State
       if (checkoutButton) {
-          // Show button only if logged in AND a valid selection is made
-          const showButton = !!authToken && canProceed;
-          checkoutButton.classList.toggle('hidden', !showButton);
-          checkoutButton.disabled = !showButton || isCheckoutInProgress;
-          if (paymentFormDiv) {
-           paymentFormDiv.classList.toggle('hidden', !showButton);
-       }
-      }
-  }
+            const showCheckoutArea = !!authToken && isSelectionOkay;
+
+            if (paymentFormDiv) {
+                paymentFormDiv.classList.toggle('hidden', !showCheckoutArea);
+            }
+
+            if (showCheckoutArea) {
+                checkoutButton.disabled = isCheckoutInProgress; // Only disable if checkout is truly in flight
+
+                if (!waiverSigned) {
+                    checkoutButton.textContent = 'Review & Sign Waiver';
+                } else {
+                    checkoutButton.textContent = isCheckoutInProgress ? 'Processing...' : 'Proceed to Checkout';
+                }
+            } else {
+                // If checkout area is hidden, also hide/reset the button
+                checkoutButton.textContent = 'Proceed to Checkout'; // Reset text
+                checkoutButton.disabled = true; // Disable if not shown
+            }
+        } else {
+            // console.warn("[FE] checkBookingLoginStatus: checkoutButton is null!");
+        }
+    }
 
   function isSelectionValidForCheckout() {
     if (!selectedService || !authToken) return false;
@@ -455,7 +534,31 @@
        }
 
        if (checkoutButton) {
-          checkoutButton.addEventListener('click', initiateCheckout);
+            checkoutButton.addEventListener('click', function() {
+                console.log("[FE] Action button clicked. Waiver signed:", waiverSigned, "Is checkout in progress?", isCheckoutInProgress);
+
+                if (isCheckoutInProgress) {
+                    return; // Don't do anything if already processing
+                }
+
+                const isSelectionOkay = isSelectionValidForCheckout();
+                const isLoggedIn = !!localStorage.getItem('authToken');
+
+                if (!isLoggedIn || !isSelectionOkay) {
+                    // This case should ideally be handled by the button not being visible
+                    // or by a more general message area.
+                    if (messagesDiv) messagesDiv.textContent = "Please log in and complete your selections.";
+                    return;
+                }
+
+                if (!waiverSigned) {
+                    openWaiverModal(); // Ensure openWaiverModal is accessible
+                    // Optional: if (messagesDiv) messagesDiv.textContent = "Please review and sign the waiver.";
+                } else {
+                    // Waiver is signed, selection is okay, user is logged in
+                    initiateCheckout(); // Your original function to go to Stripe
+                }
+            });
       }
 
       // Auth Event Listeners (also check if elements exist)
@@ -482,6 +585,88 @@
        if (logoutButton) {
            logoutButton.addEventListener('click', handleLogout);
        }
+
+       if (closeButton) {
+        closeButton.addEventListener('click', closeWaiverModal);
+    }
+    if (agreeCheckbox) {
+        agreeCheckbox.addEventListener('change', checkWaiverFormValidity);
+    }
+    if (signatureNameInput) {
+        signatureNameInput.addEventListener('input', checkWaiverFormValidity);
+    }
+
+    if (waiverSubmitButton) {
+            waiverSubmitButton.addEventListener('click', async function() { // Make it async
+                if (!agreeCheckbox || !signatureNameInput || !waiverErrorMessage) {
+                    console.error("Waiver form elements not found for submission.");
+                    return;
+                }
+
+                if (!agreeCheckbox.checked || signatureNameInput.value.trim().length < 3) {
+                    waiverErrorMessage.textContent = 'Please check the agreement box and type your full name.';
+                    waiverErrorMessage.style.display = 'block';
+                    return;
+                }
+
+                waiverErrorMessage.style.display = 'none';
+                const originalButtonText = waiverSubmitButton.textContent; // Store original text
+                waiverSubmitButton.disabled = true;
+                waiverSubmitButton.textContent = 'Submitting...';
+
+                const waiverData = {
+                    signedName: signatureNameInput.value.trim(),
+                    agreedToTerms: agreeCheckbox.checked,
+                    waiverVersion: '1.0' // Or get this dynamically
+                };
+
+                let submissionSucceeded = false;
+                try {
+                    const response = await fetch(`${backendApiUrl}/api/users/sign-waiver`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${localStorage.getItem('authToken')}`
+                        },
+                        body: JSON.stringify(waiverData)
+                    });
+
+                    const result = await response.json();
+
+                    if (!response.ok) {
+                        throw new Error(result.message || `Failed to submit waiver (Status: ${response.status})`);
+                    }
+
+                    console.log("Waiver submitted successfully to backend:", result);
+                    waiverSigned = true;
+                    submissionSucceeded = true; // Mark as succeeded
+                    closeWaiverModal();
+                    checkBookingLoginStatus();
+
+                } catch (error) {
+                    console.error("Error submitting waiver to backend:", error);
+                    waiverErrorMessage.textContent = `Error: ${error.message}`;
+                    waiverErrorMessage.style.display = 'block';
+                } finally {
+                    // Only re-enable if submission failed AND modal is still theoretically open
+                    if (!submissionSucceeded) {
+                         waiverSubmitButton.disabled = false;
+                         waiverSubmitButton.textContent = originalButtonText; // Restore original text
+                    }
+                    // If succeeded, modal closes, button state doesn't matter as much for this specific button.
+                }
+            });
+        }
+
+    // Close modal if user clicks outside the content
+    if (waiverModal) {
+        waiverModal.addEventListener('click', function(event) {
+            if (event.target === waiverModal) { // Clicked on the overlay itself
+                closeWaiverModal();
+            }
+        });
+    }
+
   }
 
   async function fetchAndDisplayCurrentCapacity(scheduleId, capacitySpanId, checkStartDate) {
@@ -1151,7 +1336,7 @@ if (selectedService === 'playgroup') {
         paymentType: playgroupSelections.paymentType,
         semesterDetails: playgroupSelections.semester,
         startDate: playgroupSelections.startDate,         // *** ADDED ***
-            durationWeeks: playgroupSelections.durationWeeks, // *** ADDED ***
+        durationWeeks: playgroupSelections.durationWeeks, // *** ADDED ***
         daysPerWeekBitmask: playgroupSelections.daysBitmask,
         scheduleIds: playgroupSelections.scheduleIds,
         // Playgroup quantity: If you allow multiple children for semester,
