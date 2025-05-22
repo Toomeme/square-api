@@ -13,8 +13,7 @@ const { toDate, toZonedTime, format} = dateFnsTz; // Import necessary functions
 const { isBefore, isEqual, addWeeks, eachDayOfInterval, getDay, startOfDay, parseISO } = require('date-fns');
 const nodemailer = require('nodemailer');
 
-const ROLLING_ENROLLMENT_WEEKS = 6; // Define duration
-
+const businessTimeZone = 'America/New_York'; // Consistent TZ
 // --- Configure Transport based on .env ---
 let transporter;
  if (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS) {
@@ -48,14 +47,14 @@ let transporter;
     };
 }
 
-const isHoliday = (dateToCheck, holidaysArray) => {
-    // Ensure dateToCheck is a Date object and normalized to start of day for comparison
-    const checkDate = startOfDay(new Date(dateToCheck)); // Use startOfDay for robust comparison
+const isHoliday = (dateToCheckUserLocal, holidaysArrayUtc) => {
+    const zonedDateToCheck = toZonedTime(new Date(dateToCheckUserLocal), businessTimeZone);
+    const startOfTargetDayInNy = startOfDay(zonedDateToCheck);
 
-    return holidaysArray.some(holidayDate => {
-        // Ensure holidayDate from the array is also a Date object and normalized
-        const hd = startOfDay(new Date(holidayDate));
-        return isEqual(hd, checkDate); // Use date-fns isEqual for reliable date comparison
+    return holidaysArrayUtc.some(holidayUtc => {
+        const zonedHoliday = toZonedTime(new Date(holidayUtc), businessTimeZone);
+        const startOfHolidayDayInNy = startOfDay(zonedHoliday);
+        return isEqual(startOfTargetDayInNy, startOfHolidayDayInNy);
     });
 };
 // --- Email Sending Function ---
@@ -130,7 +129,7 @@ const sendAdminBookingNotification = async (bookingDetails) => {
     }
 };
 
-const businessTimeZone = 'America/New_York'; // Consistent TZ
+
 
 // --- Placeholder Notification Functions (Replace with actual email/notification service) ---
 async function sendInstallmentConfirmationEmail(userEmail, amountPaid) {
@@ -289,10 +288,6 @@ async function createSemesterBookings(userId, semesterStart, semesterEnd, schedu
         const today = new Date(); // For skipping past slots
 
         const isDaySelected = (day, mask) => ((1 << day) & mask) !== 0;
-        const isHoliday = (date, holidaysArr) => {
-            const checkDate = new Date(date); checkDate.setHours(0, 0, 0, 0);
-            return holidaysArr.some(h => { const hd = new Date(h); hd.setHours(0, 0, 0, 0); return isEqual(hd, checkDate); }); // Use isEqual for date comparison
-        };
 
         while (currentDate <= endDate) {
             const zonedCurrentDate = toZonedTime(currentDate, businessTimeZone);

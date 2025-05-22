@@ -586,7 +586,7 @@
                // Check if a specific option requiring slots is selected
                const openPlayOption = openPlayChoices?.querySelector('button.active')?.dataset.option;
                const birthdayOption = birthdayChoices?.querySelector('button.active')?.dataset.option;
-                const requiresSlots = (selectedService === 'openplay' && openPlayOption === 'dropin') || (selectedService === 'birthday' && !!birthdayOption);
+                const requiresSlots = (selectedService === 'openplay' && openPlayOption === 'dropin') || (selectedService === 'birthday');
 
                if (requiresSlots && selectedDate) {
                     //console.log(`Fetching single date slots for ${selectedService} on ${selectedDate}`);
@@ -1173,7 +1173,7 @@ async function updatePlaygroupPaymentDisplays() { // Make this function async
                 const displayMap = {
                     sessionCost: "Price Per Session",
                     // registrationFee: "Registration Fee", // Only show if > 0 ? Usually 0 for 'full'
-                    potentialSessions: "Potential Sessions in Semester",
+                    potentialSessions: "Potential Sessions",
                     actualSessions: "Actual Sessions (Excl. Holidays)",
                     // totalPotentialCost: "Base Cost (Tiered)", // Maybe too confusing?
                 };
@@ -2072,7 +2072,7 @@ const loadingDiv = document.getElementById('booking-success-loading');
             summaryDiv.innerHTML = ''; // Clear previous
 
             if (data.bookingType?.includes('playgroup')) {
-                summaryDiv.innerHTML += `<p><strong>Service:</strong> Playgroup Semester</p>`;
+                summaryDiv.innerHTML += `<p><strong>Service:</strong> Playgroup</p>`;
                 summaryDiv.innerHTML += `<p>Booked ${data.bookings.length} sessions.</p>`;
                 // Optionally list the first few dates/times
                 summaryDiv.innerHTML += `<ul>`;
