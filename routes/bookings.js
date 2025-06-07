@@ -8,9 +8,8 @@ const ClassSchedule = require('../models/ClassSchedule');
 const Holiday = require('../models/Holiday');
 const { authMiddleware } = require('../utils/auth');
 const mongoose = require('mongoose');
-const dateFnsTz = require('date-fns-tz');
-const { toDate, toZonedTime, format} = dateFnsTz; // Import necessary functions
-const { isBefore, isEqual, addWeeks, eachDayOfInterval, getDay, startOfDay, parseISO } = require('date-fns');
+const { toZonedTime, format, fromZonedTime} = require('date-fns-tz'); // Import necessary functions
+const { isBefore, isEqual, addWeeks, addDays, eachDayOfInterval, getDay, startOfDay, parseISO} = require('date-fns');
 const nodemailer = require('nodemailer');
 
 const businessTimeZone = 'America/New_York'; // Consistent TZ
@@ -866,78 +865,119 @@ router.get('/semester-slot-availability', authMiddleware, async (req, res) => {
 
 // --- GET Available Slots for a Date Range ---
 router.get('/available-slots-range', async (req, res) => {
-    console.log("--- AVAILABLE SLOTS RANGE HANDLER START ---");
+    console.log("\n--- AVAILABLE SLOTS RANGE HANDLER START ---");
     const { serviceType } = req.query;
     const numberOfDays = parseInt(req.query.days || '7', 10);
+    console.log(`SLOTS-RANGE: Received serviceType='${serviceType}', days='${req.query.days}' (parsed as ${numberOfDays})`);
 
     // --- Validation ---
-    if (!serviceType || (serviceType !== 'openplay' && serviceType !== 'birthday')) { /* ... bad request ... */ }
-    if (isNaN(numberOfDays) || numberOfDays <= 0 || numberOfDays > 30) { /* ... bad request ... */ }
+    if (!serviceType || (serviceType !== 'openplay' && serviceType !== 'birthday')) {
+        console.error("SLOTS-RANGE: Validation FAIL - Invalid serviceType:", serviceType);
+        return res.status(400).json({ message: 'Invalid serviceType for range query.' });
+    }
+    if (isNaN(numberOfDays) || numberOfDays <= 0 || numberOfDays > 30) { // Max 30 days for sanity
+        console.error("SLOTS-RANGE: Validation FAIL - Invalid numberOfDays:", req.query.days);
+        return res.status(400).json({ message: 'Invalid days parameter.' });
+    }
 
     const results = {};
-    const today = new Date();
-    const startDate = toZonedTime(today, businessTimeZone);
-    const endDate = new Date(startDate);
-    endDate.setDate(startDate.getDate() + numberOfDays - 1);
-    console.log(`Fetching range for ${serviceType} from ${format(startDate, 'yyyy-MM-dd')} to ${format(endDate, 'yyyy-MM-dd')}`);
+    const todayForRangeStart = new Date(); // This is 'now' in server's local time (likely UTC on production)
+    console.log(`SLOTS-RANGE: Server 'now' (UTC/server local): ${todayForRangeStart.toISOString()}`);
+
+    const startDateNy = toZonedTime(todayForRangeStart, businessTimeZone); // Convert 'now' to NY time
+    console.log(`SLOTS-RANGE: Start date for range (NY time): ${format(startDateNy, 'yyyy-MM-dd HH:mm:ss zzz', { timeZone: businessTimeZone })}`);
+
+    let loopEndDate = new Date(startDateNy); // Start with a copy of startDateNy
+    loopEndDate.setDate(loopEndDate.getDate() + numberOfDays - 1); // Calculate end date in NY
+    console.log(`SLOTS-RANGE: Loop will go from ${format(startDateNy, 'yyyy-MM-dd')} to ${format(loopEndDate, 'yyyy-MM-dd')} (NY Time)`);
 
     try {
-        // Fetch holidays for the range
-        const rangeStartUTC = toDate(format(startDate, 'yyyy-MM-dd') + 'T00:00:00', { timeZone: businessTimeZone });
-        const rangeEndUTC = toDate(format(endDate, 'yyyy-MM-dd') + 'T23:59:59', { timeZone: businessTimeZone });
-        const holidays = await Holiday.find({ date: { $gte: rangeStartUTC, $lte: rangeEndUTC } }).lean();
-        const holidayDates = holidays.map(h => h.date); // Keep as Date objects for isHoliday helper
+        // Fetch holidays for the entire N-day range
+        // For Holiday query, we need UTC start of the first NY day and UTC start of the day AFTER the last NY day
+        const rangeStartUtcForHolidayQuery = fromZonedTime(startOfDay(startDateNy), businessTimeZone);
+        const dayAfterLoopEndNy = addDays(startOfDay(loopEndDate), 1);
+        const rangeEndUtcForHolidayQuery = fromZonedTime(dayAfterLoopEndNy, businessTimeZone);
 
-        let currentDate = new Date(startDate); // Loop variable needs to be standard Date
+        console.log(`SLOTS-RANGE: Holiday query UTC range: ${rangeStartUtcForHolidayQuery.toISOString()} to ${rangeEndUtcForHolidayQuery.toISOString()}`);
+        const holidays = await Holiday.find({
+            date: { $gte: rangeStartUtcForHolidayQuery, $lt: rangeEndUtcForHolidayQuery } // Use $lt for end date
+        }).lean();
+        const holidayNyDateStrings = holidays.map(h => format(toZonedTime(h.date, businessTimeZone), 'yyyy-MM-dd'));
+        console.log(`SLOTS-RANGE: Found ${holidays.length} holiday documents. NY Dates: [${holidayNyDateStrings.join(', ')}]`);
 
-        // --- Loop Helpers ---
-        const isHolidayInRange = (date, holidaysArr) => {
-            const checkDate = new Date(date); checkDate.setHours(0, 0, 0, 0);
-            return holidaysArr.some(h => { const hd = new Date(h); hd.setHours(0, 0, 0, 0); return isEqual(hd, checkDate); });
-        };
-        // --- End Loop Helpers ---
+        let currentDateInLoop = new Date(startDateNy); // Loop variable, starts as NY date
 
-        while (currentDate <= endDate) {
-            const currentDateZoned = toZonedTime(currentDate, businessTimeZone); // Convert inside loop for dayOfWeek check
-            const currentDateStr = format(currentDateZoned, 'yyyy-MM-dd'); // Format for key
-            console.log(`Checking date: ${currentDateStr}`);
-            results[currentDateStr] = [];
+        while (currentDateInLoop <= loopEndDate) {
+            const currentDateNyString = format(currentDateInLoop, 'yyyy-MM-dd');
+            console.log(`\nSLOTS-RANGE: --- Checking Date: ${currentDateNyString} (NY) ---`);
+            results[currentDateNyString] = [];
 
-            // Check holiday using Date object
-            if (isHolidayInRange(currentDate, holidayDates)) {
-                console.log(` > ${currentDateStr} is a holiday. Skipping.`);
-                currentDate.setDate(currentDate.getDate() + 1);
+            if (holidayNyDateStrings.includes(currentDateNyString)) {
+                console.log(`SLOTS-RANGE: > ${currentDateNyString} (NY) is a holiday. Skipping.`);
+                currentDateInLoop.setDate(currentDateInLoop.getDate() + 1);
                 continue;
             }
 
-            const dayOfWeekInTZ = currentDateZoned.getDay();
-            const classSchedules = await ClassSchedule.find({ serviceType: serviceType, dayOfWeek: dayOfWeekInTZ });
+            const dayOfWeekInNy = getDay(currentDateInLoop); // 0=Sun, 1=Mon, etc. (NY time)
+            console.log(`SLOTS-RANGE: > Day of week in NY: ${dayOfWeekInNy} for ${currentDateNyString}`);
 
-            if (!classSchedules || classSchedules.length === 0) { /* ... continue loop ... */ }
+            const classSchedules = await ClassSchedule.find({
+                serviceType: serviceType,
+                dayOfWeek: dayOfWeekInNy
+            }).lean(); // Added lean() for performance if not modifying
+
+            if (!classSchedules || classSchedules.length === 0) {
+                console.log(`SLOTS-RANGE: > No schedules found for serviceType '${serviceType}' on dayOfWeek ${dayOfWeekInNy} (NY).`);
+                currentDateInLoop.setDate(currentDateInLoop.getDate() + 1);
+                continue;
+            }
+            console.log(`SLOTS-RANGE: > Found ${classSchedules.length} schedule(s) for this day/service.`);
 
             for (const schedule of classSchedules) {
-                const startString = `${currentDateStr}T${schedule.startTime}:00`;
-                const endString = `${currentDateStr}T${schedule.endTime}:00`;
-                const zonedStartTime = toZonedTime(startString, businessTimeZone);
-                const startTimeUTC = toDate(zonedStartTime);
-                const zonedEndTime = toZonedTime(endString, businessTimeZone);
-                const endTimeUTC = toDate(zonedEndTime);
+                console.log(`SLOTS-RANGE: >> Processing schedule: ID=${schedule._id}, Time=${schedule.startTime}-${schedule.endTime} NY, Capacity=${schedule.capacity}`);
+                const slotStartStringNy = `${currentDateNyString}T${schedule.startTime}:00`;
+                const slotEndStringNy = `${currentDateNyString}T${schedule.endTime}:00`;
 
-                if (isBefore(endTimeUTC, today)) continue; // Skip past slots
+                let startTimeUtc, endTimeUtc;
+                try {
+                    startTimeUtc = fromZonedTime(slotStartStringNy, businessTimeZone);
+                    endTimeUtc = fromZonedTime(slotEndStringNy, businessTimeZone);
+                } catch (tzError) {
+                    console.error(`SLOTS-RANGE: >>> Error converting schedule time to UTC for ${slotStartStringNy}. Skipping schedule. Error: ${tzError.message}`);
+                    continue; // Skip this schedule if time is invalid
+                }
+                console.log(`SLOTS-RANGE: >>> Slot NY Time: ${slotStartStringNy} to ${slotEndStringNy}`);
+                console.log(`SLOTS-RANGE: >>> Slot UTC Time: ${startTimeUtc.toISOString()} to ${endTimeUtc.toISOString()}`);
 
-                const existingBookingsCount = await Booking.countDocuments({ /* ... */ });
+                if (isBefore(endTimeUtc, todayForRangeStart)) { // Compare slot's end UTC with 'now' UTC
+                    console.log(`SLOTS-RANGE: >>> Slot is in the past (End: ${endTimeUtc.toISOString()} vs Now: ${todayForRangeStart.toISOString()}). Skipping.`);
+                    continue;
+                }
+
+                const existingBookingsCount = await Booking.countDocuments({
+                    serviceType: serviceType,
+                    start: startTimeUtc,
+                    status: { $in: ['pending', 'paid', 'confirmed'] }
+                });
+                console.log(`SLOTS-RANGE: >>> Existing bookings for this slot (UTC ${startTimeUtc.toISOString()}): ${existingBookingsCount}`);
 
                 if (existingBookingsCount < schedule.capacity) {
-                        results[currentDateStr].push({ start: startTimeUTC.toISOString(), end: endTimeUTC.toISOString() });
+                    console.log(`SLOTS-RANGE: >>> SLOT AVAILABLE! Adding to results.`);
+                    results[currentDateNyString].push({
+                        start: startTimeUtc.toISOString(),
+                        end: endTimeUtc.toISOString()
+                    });
+                } else {
+                    console.log(`SLOTS-RANGE: >>> Slot FULL.`);
                 }
             } // End schedule loop
-            currentDate.setDate(currentDate.getDate() + 1); // Increment standard Date object
+            currentDateInLoop.setDate(currentDateInLoop.getDate() + 1);
         } // End date range loop
 
-        console.log("--- AVAILABLE SLOTS RANGE HANDLER END ---");
+        console.log("--- AVAILABLE SLOTS RANGE HANDLER END (SUCCESS) ---");
         res.json(results);
     } catch (err) {
-        console.error("Error in /available-slots-range:", err);
+        console.error("--- AVAILABLE SLOTS RANGE HANDLER ERROR ---", err);
         res.status(500).json({ message: 'Error fetching available slots range' });
     }
 });

@@ -1,7 +1,7 @@
 // generateHash.js
 const bcrypt = require('bcrypt');
 const saltRounds = 10; // Use the same rounds as your pre-save hook
-const myPlainPassword = "fatbeagle"; // Replace with the actual password
+const myPlainPassword = "mypassword"; // Replace with the actual password
 
 async function createHash() {
     try {
